@@ -1,10 +1,7 @@
-﻿# Logs & Status
-Logs/
+﻿Logs/
 LogBackups/
 Flags/
 Configs/*.log
 Configs/DateConfig.map
 Configs/TaskStatus.json
-
-# User Configs
 Configs/Webhook.url
