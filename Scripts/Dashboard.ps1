@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Dashboard V7.10 - 增強原神路徑偵測
+# AutoTask Dashboard V7.11 - WMI 強力偵測版
 # =============================================================================
 
 # --- [隱藏 Console 黑窗] ---
@@ -41,7 +41,7 @@ $Global:GenshinPath = ""
 $Global:InitialHash = ""
 $Script:IsDirty = $false
 $Script:IsLoading = $false
-$WindowTitle = "AutoTask 控制台 V7.10"
+$WindowTitle = "AutoTask 控制台 V7.11"
 
 # 字型
 $MainFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10)
@@ -87,7 +87,7 @@ function Load-WeeklyRules {
     $Global:TurbulenceRules = @{ "Monday"="day"; "Tuesday"="day"; "Wednesday"="day"; "Thursday"="day"; "Friday"="day"; "Saturday"="day"; "Sunday"="day" }
     $Global:WeeklyNoShut = @{ "Monday"=$false; "Tuesday"=$false; "Wednesday"=$false; "Thursday"=$false; "Friday"=$false; "Saturday"=$false; "Sunday"=$false }
     $Global:TurbulenceNoShut = @{ "Monday"=$false; "Tuesday"=$false; "Wednesday"=$false; "Thursday"=$false; "Friday"=$false; "Saturday"=$false; "Sunday"=$false }
-    $Global:GenshinPath = "C:\Program Files\Genshin Impact\Genshin Impact Game" 
+    $Global:GenshinPath = "C:\Program Files\Genshin Impact\Genshin Impact Game" # 預設值
 
     if ($wk) {
         foreach ($k in $Global:WeeklyRules.Keys) { if ($wk.$k) { $Global:WeeklyRules[$k] = $wk.$k } }
@@ -172,54 +172,50 @@ function Get-WeekName ($dateObj) { return (@{ "Monday"="週一"; "Tuesday"="週�
 function Mark-Dirty { if (-not $Script:IsLoading) { $Script:IsDirty = $true; $Form.Text = "$WindowTitle * (未儲存)" } }
 function Mark-Clean { $Script:IsDirty = $false; $Form.Text = $WindowTitle }
 
-# [修正] 增強版原神路徑自動偵測
+# --- [修正] 增強版原神路徑自動偵測 ---
 function Auto-Detect-GenshinPath {
-    $GameExes = @("YuanShen.exe", "GenshinImpact.exe")
-    
-    # 策略 1: 檢查正在運行的進程 (最準確)
-    foreach ($exe in $GameExes) {
-        $proc = Get-Process -Name ($exe -replace ".exe","") -ErrorAction SilentlyContinue
-        if ($proc) {
-            $path = $proc.MainModule.FileName
-            if ($path) { return (Split-Path $path -Parent) }
+    # 1. 使用 WMI 查詢正在運行的進程 (最強力方法)
+    # Get-Process 有時會因為權限問題拿不到 Path，Get-CimInstance 比較穩
+    try {
+        $RunningGames = Get-CimInstance Win32_Process -Filter "Name='YuanShen.exe' or Name='GenshinImpact.exe'"
+        foreach ($proc in $RunningGames) {
+            if ($proc.ExecutablePath) {
+                return (Split-Path $proc.ExecutablePath -Parent)
+            }
         }
+    } catch {}
+
+    # 2. 檢查常見 HoYoPlay 與官方安裝路徑
+    # 這裡加入用戶提供的新版路徑結構
+    $CommonPaths = @(
+        "C:\Program Files\HoYoPlay\games\Genshin Impact Game",
+        "C:\Program Files\HoYoPlay\games\YuanShen",
+        "C:\Program Files\Genshin Impact\Genshin Impact Game",
+        "D:\Genshin Impact Game",
+        "D:\Program Files\HoYoPlay\games\Genshin Impact Game",
+        "E:\Genshin Impact Game"
+    )
+
+    foreach ($cp in $CommonPaths) {
+        if (Test-Path "$cp\GenshinImpact.exe") { return $cp }
+        if (Test-Path "$cp\YuanShen.exe") { return $cp }
     }
 
-    # 策略 2: 檢查 Windows 註冊表
+    # 3. 檢查註冊表 (舊方法，但在 HoYoPlay 下可能失效，作為備用)
     $RegPaths = @(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Genshin Impact",
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Genshin Impact",
-        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\原神",
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\原神",
-        "HKCU:\Software\miHoYo\Genshin Impact"
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Genshin Impact"
     )
     foreach ($reg in $RegPaths) {
         if (Test-Path $reg) {
-            $p1 = (Get-ItemProperty $reg).InstallLocation
-            $p2 = (Get-ItemProperty $reg).InstallPath
-            foreach ($basePath in @($p1, $p2)) {
-                if (-not [string]::IsNullOrWhiteSpace($basePath) -and (Test-Path $basePath)) {
-                    $search = Get-ChildItem -Path $basePath -Include $GameExes -Recurse -Depth 3 -File -ErrorAction SilentlyContinue | Select-Object -First 1
-                    if ($search) { return $search.DirectoryName }
-                }
-            }
+            $p = (Get-ItemProperty $reg).InstallLocation
+            # 官方舊安裝包通常要把 "Genshin Impact Game" 接在後面
+            $try1 = Join-Path $p "Genshin Impact Game"
+            if (Test-Path "$try1\GenshinImpact.exe") { return $try1 }
+            if (Test-Path "$p\GenshinImpact.exe") { return $p }
         }
     }
 
-    # 策略 3: 暴力搜尋常見路徑
-    $CommonPaths = @(
-        "C:\Program Files\Genshin Impact",
-        "C:\Program Files\HoYoPlay\games\Genshin Impact",
-        "D:\Genshin Impact",
-        "D:\Program Files\Genshin Impact",
-        "E:\Genshin Impact"
-    )
-    foreach ($cp in $CommonPaths) {
-        if (Test-Path $cp) {
-            $search = Get-ChildItem -Path $cp -Include $GameExes -Recurse -Depth 3 -File -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($search) { return $search.DirectoryName }
-        }
-    }
     return $null
 }
 
