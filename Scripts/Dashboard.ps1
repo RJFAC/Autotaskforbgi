@@ -1,28 +1,75 @@
 # =============================================================================
-# AutoTask Dashboard V6.0 - 旗艦整合版 (含工具箱與發布功能)
+# AutoTask Dashboard V6.3 - 單一實例 & 視窗管理版
+# =============================================================================
+
+# --- [Windows API 定義] (用於視窗控制) ---
+$Win32Code = @"
+    using System;
+    using System.Runtime.InteropServices;
+    public class Win32 {
+        [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+        [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+        [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+    }
+"@
+Add-Type -MemberDefinition $Win32Code -Name "Win32" -Namespace AutoTaskUtils
+
+# --- [1. 隱藏 Console 黑窗] ---
+$hwnd = [AutoTaskUtils.Win32]::GetConsoleWindow()
+if ($hwnd -ne [IntPtr]::Zero) { [AutoTaskUtils.Win32]::ShowWindow($hwnd, 0) } # 0 = SW_HIDE
+
+# --- [2. 單一實例檢查 (防止重複開啟)] ---
+$WindowTitle = "AutoTask 控制台 V6.3"
+# 搜尋是否已有相同標題的進程 (排除自己)
+$CurrentPID = $PID
+$ExistingProc = Get-Process | Where-Object { $_.MainWindowTitle -eq $WindowTitle -and $_.Id -ne $CurrentPID } | Select-Object -First 1
+
+if ($ExistingProc) {
+    $Handle = $ExistingProc.MainWindowHandle
+    # 如果是最小化狀態 (IsIconic)，則還原 (SW_RESTORE = 9)
+    if ([AutoTaskUtils.Win32]::IsIconic($Handle)) {
+        [AutoTaskUtils.Win32]::ShowWindow($Handle, 9)
+    }
+    # 將視窗帶到最上層
+    [AutoTaskUtils.Win32]::SetForegroundWindow($Handle)
+    exit # 結束目前的重複實例
+}
+
+# =============================================================================
+# 以下為原本的 Dashboard 邏輯
 # =============================================================================
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 # --- [定義檔案路徑] ---
 $Dir = "C:\AutoTask"
-$WeeklyConf = "$Dir\Configs\WeeklyConfig.json"
-$DateMap = "$Dir\Configs\DateConfig.map"
-$TaskStatus = "$Dir\Configs\TaskStatus.json"
-$PauseLog = "$Dir\Configs\PauseDates.log"
-$NoShutdownLog = "$Dir\Configs\NoShutdown.log"
+$ScriptDir = "$Dir\Scripts"
+$ConfigsDir = "$Dir\Configs"
+$LogsDir = "$Dir\Logs"
+
+$WeeklyConf = "$ConfigsDir\WeeklyConfig.json"
+$DateMap = "$ConfigsDir\DateConfig.map"
+$TaskStatus = "$ConfigsDir\TaskStatus.json"
+$PauseLog = "$ConfigsDir\PauseDates.log"
+$NoShutdownLog = "$ConfigsDir\NoShutdown.log"
 $ManualFlag = "$Dir\Flags\ManualTrigger.flag"
 $BetterGI_UserDir = "C:\Program Files\BetterGI\User\OneDragon"
-$MasterScript = "$Dir\Scripts\Master.ps1"
-$StopScript = "$Dir\Scripts\StopAll.ps1"
-$PublishScript = "$Dir\Scripts\PublishRelease.ps1"
+$MasterScript = "$ScriptDir\Master.ps1"
+$StopScript = "$ScriptDir\StopAll.ps1"
+$PublishScript = "$ScriptDir\PublishRelease.ps1"
 
 # --- [全域變數] ---
 $Global:ConfigList = @() 
 $Global:WeeklyRules = @{}
 $Script:IsDirty = $false
 $Script:IsLoading = $false
-$WindowTitle = "AutoTask 控制台 V6.0"
+
+# [修正] 使用通用字型
+$MainFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10)
+$BoldFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10, [System.Drawing.FontStyle]::Bold)
+$TitleFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 12, [System.Drawing.FontStyle]::Bold)
+$MonoFont = New-Object System.Drawing.Font("Consolas", 10) 
 
 # --- [輔助函數] ---
 function Get-JsonConf ($path) {
@@ -78,66 +125,6 @@ function Get-StatusText {
     return @{Text=$txt; Color=$color}
 }
 
-function Get-WeekName ($dateObj) {
-    $Map = @{ "Monday"="週一"; "Tuesday"="週二"; "Wednesday"="週三"; "Thursday"="週四"; "Friday"="週五"; "Saturday"="週六"; "Sunday"="週日" }
-    return $Map[$dateObj.DayOfWeek.ToString()]
-}
-
-function Get-DisplayConfigName ($dateObj) {
-    $dStr = $dateObj.ToString("yyyyMMdd")
-    $dWeek = $dateObj.DayOfWeek.ToString()
-    if (Test-Path $DateMap) {
-        $map = Get-Content $DateMap
-        foreach ($line in $map) {
-            if ($line -match "^$dStr=(.+)$") {
-                return "$($matches[1]) (指定)"
-            }
-        }
-    }
-    $wk = Get-JsonConf $WeeklyConf
-    if ($wk) {
-        return "$($wk.$dWeek) (每週)"
-    }
-    return "day (預設)"
-}
-
-function Get-ShutdownPolicy ($dateObj) {
-    $dStr = $dateObj.ToString("yyyyMMdd")
-    if (Test-Path $NoShutdownLog) {
-        if ((Get-Content $NoShutdownLog) -contains $dStr) {
-            return "不關機"
-        }
-    }
-    return "自動關機"
-}
-
-function Parse-SmartDate ($inputStr, $anchorDate) {
-    if ([string]::IsNullOrWhiteSpace($inputStr)) { return $null }
-    $inputStr = $inputStr.Trim()
-    $y = $anchorDate.Year
-    $m = $anchorDate.Month
-
-    if ($inputStr -match "^\d{8}$") {
-        return [DateTime]::ParseExact($inputStr, "yyyyMMdd", $null)
-    }
-    if ($inputStr -match "^(\d{2})(\d{2})$") {
-        $mM = [int]$matches[1]
-        $dD = [int]$matches[2]
-        try {
-            $testDate = Get-Date -Year $y -Month $mM -Day $dD -Hour 0 -Minute 0 -Second 0
-        } catch { throw "日期無效" }
-        if ($testDate -lt $anchorDate) { return $testDate.AddYears(1) } else { return $testDate }
-    }
-    if ($inputStr -match "^(\d{2})$") {
-        $dD = [int]$matches[1]
-        try {
-            $testDate = Get-Date -Year $y -Month $m -Day $dD -Hour 0 -Minute 0 -Second 0
-        } catch { throw "日期無效" }
-        if ($testDate -lt $anchorDate) { return $testDate.AddMonths(1) } else { return $testDate }
-    }
-    throw "格式錯誤 (支援 yyyyMMdd, MMDD, DD)"
-}
-
 # --- [變更狀態追蹤] ---
 function Mark-Dirty {
     if ($Script:IsLoading) { return }
@@ -158,6 +145,7 @@ $Form = New-Object System.Windows.Forms.Form
 $Form.Text = $WindowTitle
 $Form.Size = New-Object System.Drawing.Size(1000, 720)
 $Form.StartPosition = "CenterScreen"
+$Form.Font = $MainFont
 
 $Form.Add_FormClosing({
     param($sender, $e)
@@ -169,24 +157,25 @@ $Form.Add_FormClosing({
 
 $TabControl = New-Object System.Windows.Forms.TabControl
 $TabControl.Dock = "Fill"
+$TabControl.Font = $MainFont
 
 # =============================================================================
 # 分頁 1: 即時狀態
 # =============================================================================
 $TabStatus = New-Object System.Windows.Forms.TabPage
-$TabStatus.Text = "🏠 即時狀態"
+$TabStatus.Text = "[HOME] 即時狀態" 
 $TabStatus.Padding = New-Object System.Windows.Forms.Padding(10)
 
 $lblTodayInfo = New-Object System.Windows.Forms.Label
 $lblTodayInfo.AutoSize = $true
-$lblTodayInfo.Font = New-Object System.Drawing.Font("Microsoft JhengHei UI", 12)
+$lblTodayInfo.Font = $TitleFont
 $lblTodayInfo.Location = "20, 20"
 
 $btnManual = New-Object System.Windows.Forms.Button
-$btnManual.Text = "🚨 手動救援 / 強制啟動"
+$btnManual.Text = "[!] 手動救援 / 強制啟動" 
 $btnManual.Location = "20, 150"; $btnManual.Size = "300, 50"
 $btnManual.BackColor = [System.Drawing.Color]::LightCoral
-$btnManual.Font = New-Object System.Drawing.Font("Microsoft JhengHei UI", 12, [System.Drawing.FontStyle]::Bold)
+$btnManual.Font = $TitleFont
 $btnManual.Add_Click({
     if ([System.Windows.Forms.MessageBox]::Show("確定要強制啟動任務嗎？", "確認", "YesNo") -eq "Yes") {
         New-Item -Path $ManualFlag -ItemType File -Force | Out-Null
@@ -197,6 +186,7 @@ $btnManual.Add_Click({
 $btnRefresh = New-Object System.Windows.Forms.Button
 $btnRefresh.Text = "重新整理"
 $btnRefresh.Location = "20, 210"; $btnRefresh.Width = 300
+$btnRefresh.Font = $MainFont
 $btnRefresh.Add_Click({ Update-StatusUI })
 
 $TabStatus.Controls.AddRange(@($lblTodayInfo, $btnManual, $btnRefresh))
@@ -223,19 +213,21 @@ function Update-StatusUI {
 # 分頁 2: 排程網格編輯器
 # =============================================================================
 $TabGrid = New-Object System.Windows.Forms.TabPage
-$TabGrid.Text = "📅 排程編輯器"
+$TabGrid.Text = "[GRID] 排程編輯器"
 
 $panelTool = New-Object System.Windows.Forms.Panel
 $panelTool.Dock = "Top"; $panelTool.Height = 40
 
 $btnSave = New-Object System.Windows.Forms.Button
-$btnSave.Text = "💾 儲存變更"
-$btnSave.Dock = "Left"; $btnSave.Width = 100; $btnSave.BackColor = [System.Drawing.Color]::LightGreen
+$btnSave.Text = "[SAVE] 儲存變更" 
+$btnSave.Dock = "Left"; $btnSave.Width = 120; $btnSave.BackColor = [System.Drawing.Color]::LightGreen
+$btnSave.Font = $BoldFont
 $btnSave.Add_Click({ Save-GridData })
 
 $lblHint = New-Object System.Windows.Forms.Label
 $lblHint.Text = "操作提示: 支援批量勾選 [不關機] (Ctrl/Shift) | 雙擊配置欄排序 | Ctrl+C/V | Del"
 $lblHint.Dock = "Fill"; $lblHint.TextAlign = "MiddleLeft"; $lblHint.Padding = "10,0,0,0"
+$lblHint.Font = $MainFont
 
 $panelTool.Controls.Add($lblHint)
 $panelTool.Controls.Add($btnSave)
@@ -248,7 +240,7 @@ $grid.RowHeadersVisible = $false
 $grid.SelectionMode = "CellSelect"
 $grid.MultiSelect = $true
 $grid.ClipboardCopyMode = "EnableWithoutHeaderText"
-$grid.Font = New-Object System.Drawing.Font("Consolas", 10)
+$grid.Font = $MonoFont 
 $grid.EditMode = "EditProgrammatically" 
 
 $colDate = New-Object System.Windows.Forms.DataGridViewTextBoxColumn; $colDate.HeaderText = "日期"; $colDate.ReadOnly = $true; $colDate.Width = 100
@@ -307,7 +299,7 @@ function Load-GridData {
             $row.Cells[3].Style.ForeColor = [System.Drawing.Color]::White
         } elseif ($isOverride) {
             $row.Cells[3].Style.ForeColor = [System.Drawing.Color]::Blue
-            $row.Cells[3].Style.Font = New-Object System.Drawing.Font("Consolas", 10, [System.Drawing.FontStyle]::Bold)
+            $row.Cells[3].Style.Font = $BoldFont
         }
     }
     $Script:IsLoading = $false
@@ -352,7 +344,7 @@ $grid.Add_CellDoubleClick({
         } else {
             $grid.Rows[$e.RowIndex].Cells[3].Value = $newVal
             $grid.Rows[$e.RowIndex].Cells[3].Style.ForeColor = [System.Drawing.Color]::Blue
-            $grid.Rows[$e.RowIndex].Cells[3].Style.Font = New-Object System.Drawing.Font("Consolas", 10, [System.Drawing.FontStyle]::Bold)
+            $grid.Rows[$e.RowIndex].Cells[3].Style.Font = $BoldFont
         }
         Mark-Dirty
     }
@@ -384,7 +376,7 @@ $grid.Add_KeyDown({
                             $cell.Style.ForeColor = [System.Drawing.Color]::White
                         } else {
                             $cell.Style.ForeColor = [System.Drawing.Color]::Blue
-                            $cell.Style.Font = New-Object System.Drawing.Font("Consolas", 10, [System.Drawing.FontStyle]::Bold)
+                            $cell.Style.Font = $BoldFont
                             $cell.Style.BackColor = [System.Drawing.Color]::White
                         }
                         Mark-Dirty
@@ -420,16 +412,19 @@ function Save-GridData {
     $newNoShut | Sort-Object | Set-Content $NoShutdownLog -Encoding UTF8
 
     Mark-Clean
-    [System.Windows.Forms.MessageBox]::Show("設定已儲存！`n(每週配置請至分頁 3 儲存)")
+    [System.Windows.Forms.MessageBox]::Show("設定已儲存！")
     Load-GridData
     Init-WeeklyTab
 }
+
+$TabGrid.Controls.Add($grid)
+$TabGrid.Controls.Add($panelTool)
 
 # =============================================================================
 # 分頁 3: 每週配置 GUI
 # =============================================================================
 $TabWeekly = New-Object System.Windows.Forms.TabPage
-$TabWeekly.Text = "⚙️ 每週預設設定"
+$TabWeekly.Text = "[WEEKLY] 每週預設設定" 
 
 $pnlWeekly = New-Object System.Windows.Forms.Panel
 $pnlWeekly.Dock = "Fill"
@@ -445,17 +440,19 @@ for ($i=0; $i -lt 7; $i++) {
     $l.Text = $DaysTxt[$i]
     $l.Location = "50, $y"
     $l.AutoSize = $true
-    $l.Font = New-Object System.Drawing.Font("Microsoft JhengHei UI", 11)
+    $l.Font = $MainFont
     
     $txt = New-Object System.Windows.Forms.TextBox
     $txt.Location = "120, $y"
     $txt.Width = 250
     $txt.ReadOnly = $true
+    $txt.Font = $MainFont
     
     $btnEdit = New-Object System.Windows.Forms.Button
     $btnEdit.Text = "選擇/排序"
     $btnEdit.Location = "380, $($y-2)"
-    $btnEdit.Width = 80
+    $btnEdit.Width = 100
+    $btnEdit.Font = $MainFont
     $btnEdit.Tag = $txt
     $btnEdit.Add_Click({ param($sender, $e); $current = $this.Tag.Text; $new = Show-ConfigSelectorGUI $current; if ($new -ne $null) { $this.Tag.Text = $new } }.GetNewClosure())
     
@@ -472,12 +469,13 @@ $btnSaveWeekly.Text = "儲存每週預設值"
 $btnSaveWeekly.Location = "120, $y"
 $btnSaveWeekly.Size = "250, 40"
 $btnSaveWeekly.BackColor = [System.Drawing.Color]::LightGreen
+$btnSaveWeekly.Font = $BoldFont
 $btnSaveWeekly.Add_Click({
     $newConf = @{}
     foreach ($d in $DaysKey) { $newConf[$d] = $WeeklyInputs[$d].Text }
     $newConf | ConvertTo-Json | Set-Content $WeeklyConf
     Load-WeeklyRules
-    [System.Windows.Forms.MessageBox]::Show("每週預設配置已更新！`n(排程網格將同步更新)")
+    [System.Windows.Forms.MessageBox]::Show("每週預設配置已更新！")
     Load-GridData
 })
 
@@ -498,12 +496,13 @@ function Show-ConfigSelectorGUI {
     param([string]$CurrentSelection) 
 
     $SelForm = New-Object System.Windows.Forms.Form
-    $SelForm.Text = "配置組排程器 (拖曳排序)"
+    $SelForm.Text = "配置組排程器"
     $SelForm.Size = New-Object System.Drawing.Size(700, 500)
     $SelForm.StartPosition = "CenterParent"
     $SelForm.FormBorderStyle = "FixedDialog"
     $SelForm.MaximizeBox = $false
     $SelForm.MinimizeBox = $false
+    $SelForm.Font = $MainFont
 
     $lblSrc = New-Object System.Windows.Forms.Label; $lblSrc.Text = "可用配置 (可多選)"; $lblSrc.Location = "20,10"; $lblSrc.AutoSize = $true
     $listSrc = New-Object System.Windows.Forms.ListBox; $listSrc.Location = "20,30"; $listSrc.Size = "250,350"; $listSrc.SelectionMode = "MultiExtended"
@@ -571,10 +570,10 @@ function Show-ConfigSelectorGUI {
 }
 
 # =============================================================================
-# 分頁 4: 工具與維護 (新增)
+# 分頁 4: 工具與維護 (整合功能)
 # =============================================================================
 $TabTools = New-Object System.Windows.Forms.TabPage
-$TabTools.Text = "🛠️ 工具與維護"
+$TabTools.Text = "[TOOL] 工具與維護" 
 
 $flpTools = New-Object System.Windows.Forms.FlowLayoutPanel
 $flpTools.Dock = "Fill"; $flpTools.FlowDirection = "TopDown"; $flpTools.Padding = New-Object System.Windows.Forms.Padding(20); $flpTools.AutoSize = $true
@@ -582,31 +581,31 @@ $flpTools.Dock = "Fill"; $flpTools.FlowDirection = "TopDown"; $flpTools.Padding 
 function Add-ToolBtn ($text, $color, $action) {
     $btn = New-Object System.Windows.Forms.Button
     $btn.Text = $text; $btn.Width = 400; $btn.Height = 50; $btn.BackColor = $color
-    $btn.Font = New-Object System.Drawing.Font("Microsoft JhengHei UI", 11, [System.Drawing.FontStyle]::Bold)
+    $btn.Font = $BoldFont
     $btn.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 15)
     $btn.Add_Click($action)
     $flpTools.Controls.Add($btn)
 }
 
-Add-ToolBtn "🛑 強制停止所有任務 (StopAll)" "LightCoral" {
-    if ([System.Windows.Forms.MessageBox]::Show("這將強制關閉所有相關程序 (1Remote, BetterGI, 腳本)，確定嗎？", "警告", "YesNo", "Warning") -eq "Yes") {
+Add-ToolBtn "[STOP] 強制停止所有任務" "LightCoral" {
+    if ([System.Windows.Forms.MessageBox]::Show("這將強制關閉所有相關程序，確定嗎？", "警告", "YesNo", "Warning") -eq "Yes") {
         Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$StopScript`"" -Verb RunAs
     }
 }
 
-Add-ToolBtn "🔧 修復檔案權限 (Fix Permissions)" "LightBlue" {
+Add-ToolBtn "[FIX] 修復檔案權限" "LightBlue" {
     $cmd = "takeown /F `"$Dir`" /R /D Y; icacls `"$Dir`" /grant Everyone:(OI)(CI)F /T /C"
     Start-Process powershell.exe -ArgumentList "-Command `"$cmd`"" -Verb RunAs
     [System.Windows.Forms.MessageBox]::Show("權限修復指令已發送。")
 }
 
-Add-ToolBtn "☁️ 發布至 GitHub (淨化+上傳)" "LightGray" {
+Add-ToolBtn "[GIT] 發布至 GitHub" "LightGray" {
     if ([System.Windows.Forms.MessageBox]::Show("這將建立/更新公開發布資料夾並推送到 GitHub，確定嗎？", "發布確認", "YesNo") -eq "Yes") {
         Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PublishScript`""
     }
 }
 
-Add-ToolBtn "🖥️ 修復 RDP 最小化停止渲染" "LightGray" {
+Add-ToolBtn "[RDP] 修復 RDP 最小化" "LightGray" {
     $reg = "reg add `"HKEY_LOCAL_MACHINE\Software\Microsoft\Terminal Server Client`" /v `"RemoteDesktop_SuppressWhenMinimized`" /t REG_DWORD /d 2 /f"
     Start-Process powershell.exe -ArgumentList "-Command `"$reg`"" -Verb RunAs
     [System.Windows.Forms.MessageBox]::Show("註冊表已修正。")
@@ -615,16 +614,18 @@ Add-ToolBtn "🖥️ 修復 RDP 最小化停止渲染" "LightGray" {
 $TabTools.Controls.Add($flpTools)
 
 # =============================================================================
-# 分頁 5: 日誌檢視 (新增)
+# 分頁 5: 日誌檢視
 # =============================================================================
 $TabLogs = New-Object System.Windows.Forms.TabPage
-$TabLogs.Text = "📝 日誌檢視"
+$TabLogs.Text = "[LOG] 日誌檢視" 
 
 $pnlLogTop = New-Object System.Windows.Forms.Panel; $pnlLogTop.Dock = "Top"; $pnlLogTop.Height = 40
 $cbLogFiles = New-Object System.Windows.Forms.ComboBox; $cbLogFiles.Width = 300; $cbLogFiles.Location = "10, 10"; $cbLogFiles.DropDownStyle = "DropDownList"
+$cbLogFiles.Font = $MainFont
 $btnRefreshLog = New-Object System.Windows.Forms.Button; $btnRefreshLog.Text = "重新讀取"; $btnRefreshLog.Location = "320, 8"; $btnRefreshLog.Width = 100
+$btnRefreshLog.Font = $MainFont
 
-$txtLogContent = New-Object System.Windows.Forms.TextBox; $txtLogContent.Dock = "Fill"; $txtLogContent.Multiline = $true; $txtLogContent.ScrollBars = "Vertical"; $txtLogContent.Font = New-Object System.Drawing.Font("Consolas", 10); $txtLogContent.ReadOnly = $true
+$txtLogContent = New-Object System.Windows.Forms.TextBox; $txtLogContent.Dock = "Fill"; $txtLogContent.Multiline = $true; $txtLogContent.ScrollBars = "Vertical"; $txtLogContent.Font = $MonoFont; $txtLogContent.ReadOnly = $true
 
 function Refresh-LogList {
     $cbLogFiles.Items.Clear()
@@ -654,8 +655,8 @@ $TabLogs.Add_Enter({ Refresh-LogList })
 $TabControl.Controls.Add($TabStatus)
 $TabControl.Controls.Add($TabGrid)
 $TabControl.Controls.Add($TabWeekly)
-$TabControl.Controls.Add($TabTools) # 新增工具頁
-$TabControl.Controls.Add($TabLogs)  # 新增日誌頁
+$TabControl.Controls.Add($TabTools)
+$TabControl.Controls.Add($TabLogs)
 $Form.Controls.Add($TabControl)
 
 $Form.Add_Load({ 

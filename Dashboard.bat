@@ -1,6 +1,3 @@
 @echo off
-title 自動化任務儀表板 (AutoTask Dashboard)
-mode con: cols=100 lines=40
-color 0B
-echo 正在啟動儀表板...
-start "" powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\AutoTask\Scripts\Dashboard.ps1"
+:: 使用 start /min 讓黑窗一開始就是最小化狀態，隨後 PowerShell 會將其完全隱藏
+start "" /min powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\AutoTask\Scripts\Dashboard.ps1"
