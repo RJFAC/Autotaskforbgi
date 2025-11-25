@@ -1,9 +1,18 @@
 {
-  "Monday": "monday",
-  "Tuesday": "day",
-  "Wednesday": "day",
-  "Thursday": "day",
-  "Friday": "day",
-  "Saturday": "day",
-  "Sunday": "day"
+    "Monday":  "monday",
+    "Tuesday":  "day",
+    "Wednesday":  "day",
+    "Thursday":  "day",
+    "Friday":  "day",
+    "Saturday":  "day",
+    "Sunday":  "day",
+    "Turbulence":  {
+                       "Monday":  "0 IT_Monday,默认配置",
+                       "Tuesday":  "IT_Tuesday",
+                       "Wednesday":  "IT_Wednesday",
+                       "Thursday":  "IT_Thursday",
+                       "Friday":  "IT_Friday",
+                       "Saturday":  "IT_Saturday",
+                       "Sunday":  "IT_Sunday"
+                   }
 }

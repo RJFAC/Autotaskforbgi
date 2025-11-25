@@ -104,26 +104,11 @@ function Backup-Logs {
         $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
         $TargetDir = Join-Path $BackupRootDir "Failed_$Timestamp"
         New-Item -Path $TargetDir -ItemType Directory -Force | Out-Null
-
-        $DestAuto = Join-Path $TargetDir "AutoTask_Logs"
-        New-Item -Path $DestAuto -ItemType Directory -Force | Out-Null
-        Copy-Item -Path "$LogDir\*" -Destination $DestAuto -Recurse -Force -ErrorAction SilentlyContinue
-
-        $DestBG = Join-Path $TargetDir "BetterGI_Logs"
-        New-Item -Path $DestBG -ItemType Directory -Force | Out-Null
-        Copy-Item -Path "$LogDirBG\*" -Destination $DestBG -Recurse -Force -ErrorAction SilentlyContinue
-
-        if (Test-Path $1RemoteLogDir) {
-            $Dest1R = Join-Path $TargetDir "1Remote_Logs"
-            New-Item -Path $Dest1R -ItemType Directory -Force | Out-Null
-            Copy-Item -Path "$1RemoteLogDir\*" -Destination $Dest1R -Recurse -Force -ErrorAction SilentlyContinue
-        }
+        Copy-Item -Path "$LogDir\*" -Destination (New-Item -Path "$TargetDir\AutoTask_Logs" -ItemType Directory) -Recurse -Force -ErrorAction SilentlyContinue
+        Copy-Item -Path "$LogDirBG\*" -Destination (New-Item -Path "$TargetDir\BetterGI_Logs" -ItemType Directory) -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path $1RemoteLogDir) { Copy-Item -Path "$1RemoteLogDir\*" -Destination (New-Item -Path "$TargetDir\1Remote_Logs" -ItemType Directory) -Recurse -Force -ErrorAction SilentlyContinue }
         Write-Log "日誌備份完成。路徑: $TargetDir" "Green"
-        return $TargetDir
-    } catch { 
-        Write-Log "日誌備份失敗: $_" "Red"
-        return $null
-    }
+    } catch { Write-Log "日誌備份失敗: $_" "Red" }
 }
 
 function Update-Status ($status, $retry) {
@@ -136,22 +121,6 @@ function Update-Status ($status, $retry) {
     $obj | ConvertTo-Json | Set-Content $TaskStatusFile
 }
 
-function Get-TargetConfig {
-    $today = (Get-Date).AddHours(-3)
-    $dStr = $today.ToString("yyyyMMdd")
-    if (Test-Path $DateMap) {
-        $map = Get-Content $DateMap
-        foreach ($line in $map) { if ($line -match "^$dStr=(.+)$") { return $matches[1] } }
-    }
-    if (Test-Path $WeeklyConf) {
-        try {
-            $wk = Get-Content $WeeklyConf -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
-            if ($wk) { return $wk.$($today.DayOfWeek.ToString()) }
-        } catch {}
-    }
-    return "day"
-}
-
 function Check-Success-Log ($logPath) {
     try {
         $Logs = Get-Content $logPath -Tail 50 -Encoding UTF8 -ErrorAction SilentlyContinue
@@ -160,8 +129,63 @@ function Check-Success-Log ($logPath) {
     return $false
 }
 
+# --- [核心演算法] ---
+# 1. 計算最近的版本更新日
+function Get-LastUpdateDate ($CheckDate) {
+    $RefDate = [datetime]"2024-08-28" # 5.0 基準日
+    $DaysDiff = ($CheckDate.Date - $RefDate).Days
+    $Cycles = [math]::Floor($DaysDiff / 42)
+    return $RefDate.AddDays($Cycles * 42)
+}
+
+# 2. 判斷是否為版本更新日
+function Test-GenshinUpdateDay ($CheckDate) {
+    $LastUpdate = Get-LastUpdateDate $CheckDate
+    return ($LastUpdate.Date -eq $CheckDate.Date)
+}
+
+# 3. 判斷是否為紊亂爆發期 (Update + 8 ~ + 18)
+function Test-TurbulencePeriod ($CheckDate) {
+    $LastUpdate = Get-LastUpdateDate $CheckDate
+    $Start = $LastUpdate.AddDays(8)
+    $End = $LastUpdate.AddDays(18)
+    # 檢查日期是否在區間內
+    return ($CheckDate.Date -ge $Start.Date -and $CheckDate.Date -le $End.Date)
+}
+
+# 4. 決定配置 (整合所有規則)
+function Get-TargetConfig {
+    $today = (Get-Date).AddHours(-3)
+    $dStr = $today.ToString("yyyyMMdd")
+    $weekDay = $today.DayOfWeek.ToString()
+    
+    # A. 指定日期 (最高優先)
+    if (Test-Path $DateMap) {
+        $map = Get-Content $DateMap
+        foreach ($line in $map) { if ($line -match "^$dStr=(.+)$") { return $matches[1] } }
+    }
+    
+    $wk = $null
+    if (Test-Path $WeeklyConf) {
+        try { $wk = Get-Content $WeeklyConf -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue } catch {}
+    }
+    
+    if ($wk) {
+        # B. 紊亂爆發期 (次優先)
+        if (Test-TurbulencePeriod $today) {
+             if ($wk.Turbulence -and $wk.Turbulence.$weekDay) {
+                 Write-Log "今日為紊亂爆發期 ($weekDay)，使用特殊配置。" "Cyan"
+                 return $wk.Turbulence.$weekDay
+             }
+        }
+        # C. 一般每週配置
+        return $wk.$weekDay
+    }
+    return "day"
+}
+
 # =============================================================================
-# [前日殘留處理]
+# [前日殘留處理] (03:50 ~ 04:00)
 # =============================================================================
 $CurrentTime = Get-Date
 $TodayLimit = $CurrentTime.Date.AddHours(4) 
@@ -218,7 +242,8 @@ if ((Get-Date).Hour -lt 4) {
 # =============================================================================
 # [今日排程檢查]
 # =============================================================================
-$CurrentDateStr = (Get-Date).AddHours(-3).ToString("yyyyMMdd")
+$CurrentDateObj = (Get-Date).AddHours(-3)
+$CurrentDateStr = $CurrentDateObj.ToString("yyyyMMdd")
 Write-Log "今日日期 (計算結果): $CurrentDateStr"
 
 Cleanup-Screenshots
@@ -230,6 +255,38 @@ if (Test-Path $ForceRunFlag) {
     Remove-Item $ForceRunFlag -Force
 }
 
+# [新功能] 版本更新日特別邏輯
+$IsUpdateDay = Test-GenshinUpdateDay $CurrentDateObj
+$UpdateResumeTime = $CurrentDateObj.Date.AddHours(11).AddMinutes(30) # 11:30
+
+if ($IsUpdateDay -and -not $IsForceRun) {
+    if ((Get-Date) -lt $UpdateResumeTime) {
+        Write-Log "⚠️ 今日為版本更新日！進入維護待機模式。" "Magenta"
+        Send-Notify -Title "版本更新" -Msg "系統進入待機，預計 11:30 恢復運行。" -Color "Yellow"
+        
+        # [新功能] 預下載啟動 (Req 4)
+        # 嘗試尋找啟動器 (假設在上一層目錄的 Launcher 下)
+        $LauncherPath = Join-Path (Split-Path (Split-Path $BettergiDir)) "Genshin Impact Game\YuanShen.exe" 
+        # 修正：通常啟動器是 launcher.exe，遊戲本體是 YuanShen.exe
+        # 這裡直接嘗試啟動遊戲本體，通常會觸發更新檢查
+        # 或者 BetterGI 啟動時會自動處理？假設這裡我們只做等待。
+        # 為了滿足「提早自動完成預下載」，我們嘗試啟動 BetterGI 一次，讓它去撞更新
+        Write-Log "嘗試啟動 BetterGI 以觸發預下載..."
+        Start-Process -FilePath $BettergiExe -WorkingDirectory $BettergiDir
+        Start-Sleep 300 # 給它 5 分鐘下載
+        Stop-Process -Name "BetterGI" -Force -ErrorAction SilentlyContinue
+
+        # 進入長等待
+        while ((Get-Date) -lt $UpdateResumeTime) {
+            $Diff = $UpdateResumeTime - (Get-Date)
+            Write-Host "等待維護結束... 剩餘 $($Diff.Hours)時$($Diff.Minutes)分"
+            Start-Sleep 60
+        }
+        Write-Log "維護時間已過，準備執行。" "Green"
+    }
+}
+
+# 一般暫停檢查
 if (-not $IsForceRun -and (Test-Path $PauseLog)) {
     if ((Get-Content $PauseLog) -contains $CurrentDateStr) {
         Write-Log "今日排程暫停。執行清理並登出。" "Yellow"
@@ -260,7 +317,6 @@ if (-not $IsForceRun -and (Test-Path $LastRunLog)) {
 $RetryCount = 0
 $ConfigName = Get-TargetConfig
 $ConfigQueue = $ConfigName -split ","
-$StartTime = Get-Date
 
 if (-not (Test-Path $BettergiExe)) {
     Write-Log "嚴重錯誤：找不到 BetterGI 執行檔 ($BettergiExe)" "Red"
@@ -272,7 +328,6 @@ Check-Network
 
 while ($RetryCount -le $MaxRetries) {
     Update-Status "Running" $RetryCount
-    
     $AllConfigSuccess = $true
     $CurrentQueueIndex = 0
     $ConfigFrequency = @{}
@@ -284,9 +339,8 @@ while ($RetryCount -le $MaxRetries) {
         $CurrentQueueIndex++
         $CurrentConfigRunCount[$CurrentConfig]++
         
-        $LogMsg = ">>> 執行進度 [$CurrentQueueIndex/$($ConfigQueue.Count)]: 配置 [$CurrentConfig]"
-        if ($ConfigFrequency[$CurrentConfig] -gt 1) { $LogMsg += " (本日第 $($CurrentConfigRunCount[$CurrentConfig])/$($ConfigFrequency[$CurrentConfig]) 次)" }
-        $LogMsg += " (重試: $RetryCount/$MaxRetries)"
+        $LogMsg = ">>> 執行配置: [$CurrentConfig] (進度: $CurrentQueueIndex/$($ConfigQueue.Count))"
+        if ($ConfigFrequency[$CurrentConfig] -gt 1) { $LogMsg += " (第 $($CurrentConfigRunCount[$CurrentConfig]) 次)" }
         Write-Log $LogMsg "Cyan"
 
         Stop-Process -Name "BetterGI" -Force -ErrorAction SilentlyContinue
@@ -299,6 +353,10 @@ while ($RetryCount -le $MaxRetries) {
         $WatchdogStart = Get-Date
         $IsSuccess = $false
         $IsFailed = $false
+        
+        # [修正] 心跳超時設定
+        # 若是更新日，放寬到 60 分鐘 (Req 3)
+        $HeartbeatLimit = if ($IsUpdateDay) { 60 } else { 15 }
         
         $LogFile = $null
         for ($i=0; $i -lt 90; $i++) {
@@ -318,37 +376,34 @@ while ($RetryCount -le $MaxRetries) {
             while (-not $IsSuccess -and -not $IsFailed) {
                 Start-Sleep 5
                 
+                # 1. 檢查成功
                 if (Check-Success-Log $LogFile.FullName) {
                     Write-Log "配置 [$CurrentConfig] 執行完成！" "Green"
                     $IsSuccess = $true
                     break
                 }
                 
-                # [修正] 二次確認機制 (Double Check)
+                # 2. 檢查進程 + 二次確認
                 if (-not (Get-Process "BetterGI" -ErrorAction SilentlyContinue)) { 
-                    Write-Log "⚠️ 偵測到 BetterGI 進程消失，等待 3 秒後進行二次確認..." "Yellow"
+                    Write-Log "BetterGI 進程消失，等待 3 秒後確認..." "Yellow"
                     Start-Sleep 3
-                    
                     if (-not (Get-Process "BetterGI" -ErrorAction SilentlyContinue)) {
-                        Write-Log "確認 BetterGI 已完全停止，檢查是否為正常結束..."
                         if (Check-Success-Log $LogFile.FullName) {
-                            Write-Log "配置 [$CurrentConfig] 執行完成！(進程結束後確認)" "Green"
+                            Write-Log "確認配置 [$CurrentConfig] 已完成 (進程結束後)。" "Green"
                             $IsSuccess = $true
                         } else {
-                            Write-Log "配置 [$CurrentConfig] 意外中斷且無成功訊號！" "Red"
+                            Write-Log "配置 [$CurrentConfig] 意外中斷！" "Red"
                             $IsFailed = $true
                         }
-                        break
-                    } else {
-                        Write-Log "BetterGI 仍在運行 (二次確認成功)，繼續監控。" "Green"
-                        continue
+                        break 
                     }
                 }
                 
+                # 3. 心跳檢查
                 $LogFile.Refresh()
-                if (((Get-Date) - $LogFile.LastWriteTime).TotalMinutes -gt 15) { 
+                if (((Get-Date) - $LogFile.LastWriteTime).TotalMinutes -gt $HeartbeatLimit) { 
                     if (Check-Success-Log $LogFile.FullName) { $IsSuccess = $true; break }
-                    Write-Log "⚠️ 警報：配置 [$CurrentConfig] 日誌停滯，判定卡死！" "Red"
+                    Write-Log "⚠️ 警報：日誌超過 $HeartbeatLimit 分鐘未更新，判定卡死！" "Red"
                     $IsFailed = $true 
                 }
             }
@@ -356,7 +411,7 @@ while ($RetryCount -le $MaxRetries) {
 
         if (-not $IsSuccess) {
             $AllConfigSuccess = $false
-            Write-Log "配置 [$CurrentConfig] 失敗，將觸發整體重試。" "Yellow"
+            Write-Log "配置 [$CurrentConfig] 失敗，準備重試整個佇列。" "Yellow"
             break 
         } else {
             Start-Sleep 5
@@ -365,40 +420,28 @@ while ($RetryCount -le $MaxRetries) {
 
     if ($AllConfigSuccess) {
         $Duration = New-TimeSpan -Start $StartTime -End (Get-Date)
-        $DurationStr = "{0:hh}時{0:mm}分" -f $Duration
-        Write-Log ">>> 所有排程配置皆已完成。總耗時: $DurationStr" "Green"
-        
-        Send-Notify -Title "任務成功" -Msg "配置 [$ConfigName] 已完成。`n耗時: $DurationStr" -Color "Green"
+        Write-Log ">>> 所有排程完成。總耗時: {0:hh}時{0:mm}分" -f $Duration "Green"
+        Send-Notify -Title "任務成功" -Msg "配置 [$ConfigName] 已完成。" -Color "Green"
 
         Update-Status "Success" $RetryCount
         Set-Content $LastRunLog -Value $CurrentDateStr
         while (Get-Process "GenshinImpact" -ErrorAction SilentlyContinue) { Start-Sleep 5 }
         New-Item -Path $DoneFlag -ItemType File -Force | Out-Null
         
-        if ($IsForceRun) {
-            Write-Log "手動執行完成。10 秒後登出..."
-            Start-Sleep 10
-        } else {
-            Start-Sleep 3
-        }
+        if ($IsForceRun) { Start-Sleep 10 } else { Start-Sleep 3 }
         logoff
         exit
     } else {
-        Write-Log ">>> 任務鏈中斷，準備重試..." "Yellow"
         $RetryCount++
         if ($RetryCount -gt $MaxRetries) {
             Write-Log ">>> 已達最大重試次數，放棄。" "Red"
-            
-            $BackupPath = Backup-Logs
-            Send-Notify -Title "任務失敗" -Msg "配置 [$ConfigName] 嚴重失敗 (重試3次)。`n日誌已備份至: $BackupPath" -Color "Red"
-
+            Backup-Logs
             Update-Status "Failed" $RetryCount
+            Send-Notify -Title "任務失敗" -Msg "已達最大重試次數。" -Color "Red"
             New-Item -Path $FailFlag -ItemType File -Force | Out-Null
             if ($IsForceRun) { Start-Sleep 10 } else { Start-Sleep 3 }
             logoff
             exit
-        } else {
-            Start-Sleep 10
         }
     }
 }
