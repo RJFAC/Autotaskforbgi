@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Dashboard V7.12 - 顯示遊戲路徑版
+# AutoTask Dashboard V7.13 - 設定分離版 (獨立環境設定)
 # =============================================================================
 
 # --- [隱藏 Console 黑窗] ---
@@ -20,10 +20,12 @@ $Dir = "C:\AutoTask"
 $ScriptDir = "$Dir\Scripts"
 $ConfigsDir = "$Dir\Configs"
 $LogsDir = "$Dir\Logs"
-$WeeklyConf = "$ConfigsDir\WeeklyConfig.json"
-$DateMap = "$ConfigsDir\DateConfig.map"
+
+$WeeklyConf = "$ConfigsDir\WeeklyConfig.json" # 僅存排程
+$EnvConf    = "$ConfigsDir\EnvConfig.json"    # [新] 僅存環境路徑
+$DateMap    = "$ConfigsDir\DateConfig.map"
 $TaskStatus = "$ConfigsDir\TaskStatus.json"
-$PauseLog = "$ConfigsDir\PauseDates.log"
+$PauseLog   = "$ConfigsDir\PauseDates.log"
 $NoShutdownLog = "$ConfigsDir\NoShutdown.log"
 $ManualFlag = "$Dir\Flags\ManualTrigger.flag"
 $BetterGI_UserDir = "C:\Program Files\BetterGI\User\OneDragon"
@@ -41,7 +43,7 @@ $Global:GenshinPath = ""
 $Global:InitialHash = ""
 $Script:IsDirty = $false
 $Script:IsLoading = $false
-$WindowTitle = "AutoTask 控制台 V7.12"
+$WindowTitle = "AutoTask 控制台 V7.13"
 
 # 字型
 $MainFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10)
@@ -80,6 +82,25 @@ function Load-BetterGIConfigs {
     }
 }
 
+# [新] 載入環境設定
+function Load-EnvConfig {
+    $env = Get-JsonConf $EnvConf
+    if ($env -and $env.GenshinPath) {
+        $Global:GenshinPath = $env.GenshinPath
+    } else {
+        # 相容性檢查：如果新檔不存在，嘗試從舊 WeeklyConf 讀取一次
+        $wk = Get-JsonConf $WeeklyConf
+        if ($wk -and $wk.GenshinPath) { 
+            $Global:GenshinPath = $wk.GenshinPath
+            # 自動遷移到新檔
+            $newEnv = @{ GenshinPath = $wk.GenshinPath }
+            $newEnv | ConvertTo-Json | Set-Content $EnvConf -Encoding UTF8
+        } else {
+            $Global:GenshinPath = "尚未設定"
+        }
+    }
+}
+
 function Load-WeeklyRules {
     $wk = Get-JsonConf $WeeklyConf
     
@@ -87,7 +108,6 @@ function Load-WeeklyRules {
     $Global:TurbulenceRules = @{ "Monday"="day"; "Tuesday"="day"; "Wednesday"="day"; "Thursday"="day"; "Friday"="day"; "Saturday"="day"; "Sunday"="day" }
     $Global:WeeklyNoShut = @{ "Monday"=$false; "Tuesday"=$false; "Wednesday"=$false; "Thursday"=$false; "Friday"=$false; "Saturday"=$false; "Sunday"=$false }
     $Global:TurbulenceNoShut = @{ "Monday"=$false; "Tuesday"=$false; "Wednesday"=$false; "Thursday"=$false; "Friday"=$false; "Saturday"=$false; "Sunday"=$false }
-    $Global:GenshinPath = "尚未設定" # 預設值
 
     if ($wk) {
         foreach ($k in $Global:WeeklyRules.Keys) { if ($wk.$k) { $Global:WeeklyRules[$k] = $wk.$k } }
@@ -104,7 +124,7 @@ function Load-WeeklyRules {
                  }
             }
         }
-        if ($wk.GenshinPath) { $Global:GenshinPath = $wk.GenshinPath }
+        # 注意：這裡不再讀取 GenshinPath
     }
 }
 
@@ -172,11 +192,9 @@ function Get-WeekName ($dateObj) { return (@{ "Monday"="週一"; "Tuesday"="週�
 function Mark-Dirty { if (-not $Script:IsLoading) { $Script:IsDirty = $true; $Form.Text = "$WindowTitle * (未儲存)" } }
 function Mark-Clean { $Script:IsDirty = $false; $Form.Text = $WindowTitle }
 
-# [修正] 增強版原神路徑自動偵測
+# 自動偵測原神路徑
 function Auto-Detect-GenshinPath {
     $GameExes = @("YuanShen.exe", "GenshinImpact.exe")
-    
-    # 策略 1: 檢查正在運行的進程 (最準確)
     foreach ($exe in $GameExes) {
         $proc = Get-Process -Name ($exe -replace ".exe","") -ErrorAction SilentlyContinue
         if ($proc) {
@@ -184,8 +202,6 @@ function Auto-Detect-GenshinPath {
             if ($path) { return (Split-Path $path -Parent) }
         }
     }
-
-    # 策略 2: 檢查 Windows 註冊表
     $RegPaths = @(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Genshin Impact",
         "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Genshin Impact",
@@ -205,8 +221,6 @@ function Auto-Detect-GenshinPath {
             }
         }
     }
-
-    # 策略 3: 暴力搜尋常見路徑
     $CommonPaths = @(
         "C:\Program Files\Genshin Impact",
         "C:\Program Files\HoYoPlay\games\Genshin Impact",
@@ -226,6 +240,7 @@ function Auto-Detect-GenshinPath {
 # --- GUI 初始化 ---
 Load-BetterGIConfigs
 Load-WeeklyRules
+# Load-EnvConfig 在 Update-PathLabel 中被呼叫，或在初始化時呼叫
 
 $Form = New-Object System.Windows.Forms.Form
 $Form.Text = $WindowTitle
@@ -377,11 +392,6 @@ $btnWSave.Add_Click({
         $conf.NoShutdown.$d = $WShutChecks[$d].Checked
         $conf.Turbulence.NoShutdown.$d = $TShutChecks[$d].Checked
     }
-    
-    # 保存原神路徑
-    if ($conf.GenshinPath -eq $null) { $conf | Add-Member -Name "GenshinPath" -Value $Global:GenshinPath -MemberType NoteProperty -Force }
-    else { $conf.GenshinPath = $Global:GenshinPath }
-    
     $conf | ConvertTo-Json -Depth 4 | Set-Content $WeeklyConf
     Load-WeeklyRules; [System.Windows.Forms.MessageBox]::Show("設定已儲存！"); Load-GridData
 })
@@ -426,12 +436,10 @@ $TabTools = New-Object System.Windows.Forms.TabPage; $TabTools.Text = "[TOOL] �
 $flpTools = New-Object System.Windows.Forms.FlowLayoutPanel; $flpTools.Dock="Fill"; $flpTools.FlowDirection="TopDown"; $flpTools.Padding="20"; $flpTools.AutoSize=$true
 function Add-ToolBtn ($text, $color, $action) { $btn = New-Object System.Windows.Forms.Button; $btn.Text=$text; $btn.Width=400; $btn.Height=50; $btn.BackColor=$color; $btn.Font=$BoldFont; $btn.Margin="0,0,0,15"; $btn.Add_Click($action); $flpTools.Controls.Add($btn) }
 
-# [新] 顯示目前路徑 Label
 $lblPath = New-Object System.Windows.Forms.Label; $lblPath.AutoSize=$true; $lblPath.Font=$MainFont; $lblPath.ForeColor="Gray"
 $lblPath.Text = "目前遊戲路徑: 載入中..."
 $flpTools.Controls.Add($lblPath)
 
-# 更新路徑顯示的輔助函數
 function Update-PathLabel {
     $path = "尚未設定"
     if ($Global:GenshinPath) { $path = $Global:GenshinPath }
@@ -463,12 +471,11 @@ Add-ToolBtn "📂 設定原神遊戲路徑 (自動/手動)" "LightYellow" {
     }
 
     if ($UseAuto) {
-        $conf = Get-JsonConf $WeeklyConf
-        if ($conf -eq $null) { $conf = @{} }
-        $conf | Add-Member -Name "GenshinPath" -Value $Global:GenshinPath -MemberType NoteProperty -Force
-        $conf | ConvertTo-Json -Depth 4 | Set-Content $WeeklyConf
-        [System.Windows.Forms.MessageBox]::Show("路徑已儲存！", "設定完成", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        Update-PathLabel # [新] 即時更新 Label
+        # [修正] 存入 EnvConfig.json
+        $envData = @{ GenshinPath = $Global:GenshinPath }
+        $envData | ConvertTo-Json | Set-Content "$ConfigsDir\EnvConfig.json" -Encoding UTF8
+        [System.Windows.Forms.MessageBox]::Show("路徑已儲存！", "設定完成")
+        Update-PathLabel
     }
 }
 
@@ -514,5 +521,5 @@ $pnlLogTop.Controls.Add($cbLogFiles); $pnlLogTop.Controls.Add($btnRefreshLog); $
 # --- 組合 ---
 $TabControl.Controls.AddRange(@($TabStatus, $TabGrid, $TabWeekly, $TabTools, $TabLogs))
 $Form.Controls.Add($TabControl)
-$Form.Add_Load({ Update-StatusUI; Load-GridData; Init-WeeklyTab; Update-PathLabel }) # [新] 載入時更新 Label
+$Form.Add_Load({ Update-StatusUI; Load-GridData; Init-WeeklyTab; Load-EnvConfig; Update-PathLabel })
 $Form.ShowDialog()
