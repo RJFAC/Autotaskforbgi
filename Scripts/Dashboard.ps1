@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Dashboard V7.13 - 設定分離版 (獨立環境設定)
+# AutoTask Dashboard V7.15 - 持久化變更偵測 & HoYoPlay 路徑修復版
 # =============================================================================
 
 # --- [隱藏 Console 黑窗] ---
@@ -20,18 +20,17 @@ $Dir = "C:\AutoTask"
 $ScriptDir = "$Dir\Scripts"
 $ConfigsDir = "$Dir\Configs"
 $LogsDir = "$Dir\Logs"
-
-$WeeklyConf = "$ConfigsDir\WeeklyConfig.json" # 僅存排程
-$EnvConf    = "$ConfigsDir\EnvConfig.json"    # [新] 僅存環境路徑
-$DateMap    = "$ConfigsDir\DateConfig.map"
+$WeeklyConf = "$ConfigsDir\WeeklyConfig.json"
+$DateMap = "$ConfigsDir\DateConfig.map"
 $TaskStatus = "$ConfigsDir\TaskStatus.json"
-$PauseLog   = "$ConfigsDir\PauseDates.log"
+$PauseLog = "$ConfigsDir\PauseDates.log"
 $NoShutdownLog = "$ConfigsDir\NoShutdown.log"
 $ManualFlag = "$Dir\Flags\ManualTrigger.flag"
 $BetterGI_UserDir = "C:\Program Files\BetterGI\User\OneDragon"
 $MasterScript = "$ScriptDir\Master.ps1"
 $StopScript = "$ScriptDir\StopAll.ps1"
 $PublishScript = "$ScriptDir\PublishRelease.ps1"
+$HashFile = "$ConfigsDir\ScriptHash.txt" # [新] 儲存上次發布的 Hash
 
 # --- [全域變數] ---
 $Global:ConfigList = @() 
@@ -40,10 +39,9 @@ $Global:TurbulenceRules = @{}
 $Global:WeeklyNoShut = @{} 
 $Global:TurbulenceNoShut = @{}
 $Global:GenshinPath = "" 
-$Global:InitialHash = ""
 $Script:IsDirty = $false
 $Script:IsLoading = $false
-$WindowTitle = "AutoTask 控制台 V7.13"
+$WindowTitle = "AutoTask 控制台 V7.15"
 
 # 字型
 $MainFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10)
@@ -51,14 +49,14 @@ $BoldFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10, [System.
 $TitleFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 12, [System.Drawing.FontStyle]::Bold)
 $MonoFont = New-Object System.Drawing.Font("Consolas", 10) 
 
-function Get-ScriptsHash {
+# [修正] 計算目前腳本雜湊值
+function Get-CurrentScriptsHash {
     $str = ""
     Get-ChildItem $ScriptDir -Include "*.ps1", "*.bat" -Recurse | Sort-Object Name | ForEach-Object { 
         $str += (Get-FileHash $_.FullName).Hash 
     }
     return $str
 }
-$Global:InitialHash = Get-ScriptsHash
 
 # --- [輔助函數] ---
 function Get-JsonConf ($path) {
@@ -82,19 +80,16 @@ function Load-BetterGIConfigs {
     }
 }
 
-# [新] 載入環境設定
 function Load-EnvConfig {
-    $env = Get-JsonConf $EnvConf
+    $env = Get-JsonConf "$ConfigsDir\EnvConfig.json"
     if ($env -and $env.GenshinPath) {
         $Global:GenshinPath = $env.GenshinPath
     } else {
-        # 相容性檢查：如果新檔不存在，嘗試從舊 WeeklyConf 讀取一次
         $wk = Get-JsonConf $WeeklyConf
         if ($wk -and $wk.GenshinPath) { 
             $Global:GenshinPath = $wk.GenshinPath
-            # 自動遷移到新檔
             $newEnv = @{ GenshinPath = $wk.GenshinPath }
-            $newEnv | ConvertTo-Json | Set-Content $EnvConf -Encoding UTF8
+            $newEnv | ConvertTo-Json | Set-Content "$ConfigsDir\EnvConfig.json" -Encoding UTF8
         } else {
             $Global:GenshinPath = "尚未設定"
         }
@@ -124,7 +119,6 @@ function Load-WeeklyRules {
                  }
             }
         }
-        # 注意：這裡不再讀取 GenshinPath
     }
 }
 
@@ -192,21 +186,47 @@ function Get-WeekName ($dateObj) { return (@{ "Monday"="週一"; "Tuesday"="週�
 function Mark-Dirty { if (-not $Script:IsLoading) { $Script:IsDirty = $true; $Form.Text = "$WindowTitle * (未儲存)" } }
 function Mark-Clean { $Script:IsDirty = $false; $Form.Text = $WindowTitle }
 
-# 自動偵測原神路徑
+# [修正] 增強版原神路徑自動偵測 (加入 wmic 與 HoYoPlay)
 function Auto-Detect-GenshinPath {
+    # 策略 1: WMI (繞過權限問題，對抗 Anti-Cheat)
+    try {
+        $WmicOutput = wmic process where "name='YuanShen.exe' or name='GenshinImpact.exe'" get ExecutablePath 2>$null | Out-String
+        if ($WmicOutput -match "(.:\\.*\.exe)") {
+             return (Split-Path $matches[1] -Parent)
+        }
+    } catch {}
+
+    # 策略 2: PowerShell Get-Process
     $GameExes = @("YuanShen.exe", "GenshinImpact.exe")
     foreach ($exe in $GameExes) {
         $proc = Get-Process -Name ($exe -replace ".exe","") -ErrorAction SilentlyContinue
         if ($proc) {
-            $path = $proc.MainModule.FileName
-            if ($path) { return (Split-Path $path -Parent) }
+            try {
+                $path = $proc.MainModule.FileName
+                if ($path) { return (Split-Path $path -Parent) }
+            } catch {}
         }
     }
+
+    # 策略 3: 暴力搜尋 (新增 HoYoPlay 預設路徑)
+    $CommonPaths = @(
+        "C:\Program Files\HoYoPlay\games\Genshin Impact Game",
+        "C:\Program Files\Genshin Impact\Genshin Impact Game",
+        "D:\Genshin Impact Game",
+        "D:\Program Files\HoYoPlay\games\Genshin Impact Game",
+        "E:\Genshin Impact Game",
+        "C:\Program Files\HoYoPlay\games\YuanShen"
+    )
+    foreach ($cp in $CommonPaths) {
+        if (Test-Path "$cp\GenshinImpact.exe") { return $cp }
+        if (Test-Path "$cp\YuanShen.exe") { return $cp }
+    }
+
+    # 策略 4: 註冊表
     $RegPaths = @(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Genshin Impact",
         "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Genshin Impact",
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\原神",
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\原神",
         "HKCU:\Software\miHoYo\Genshin Impact"
     )
     foreach ($reg in $RegPaths) {
@@ -215,23 +235,13 @@ function Auto-Detect-GenshinPath {
             $p2 = (Get-ItemProperty $reg).InstallPath
             foreach ($basePath in @($p1, $p2)) {
                 if (-not [string]::IsNullOrWhiteSpace($basePath) -and (Test-Path $basePath)) {
-                    $search = Get-ChildItem -Path $basePath -Include $GameExes -Recurse -Depth 3 -File -ErrorAction SilentlyContinue | Select-Object -First 1
-                    if ($search) { return $search.DirectoryName }
+                    # 檢查是否已經是 Game 層
+                    if (Test-Path "$basePath\GenshinImpact.exe") { return $basePath }
+                    # 檢查下一層
+                    $sub = Join-Path $basePath "Genshin Impact Game"
+                    if (Test-Path "$sub\GenshinImpact.exe") { return $sub }
                 }
             }
-        }
-    }
-    $CommonPaths = @(
-        "C:\Program Files\Genshin Impact",
-        "C:\Program Files\HoYoPlay\games\Genshin Impact",
-        "D:\Genshin Impact",
-        "D:\Program Files\Genshin Impact",
-        "E:\Genshin Impact"
-    )
-    foreach ($cp in $CommonPaths) {
-        if (Test-Path $cp) {
-            $search = Get-ChildItem -Path $cp -Include $GameExes -Recurse -Depth 3 -File -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($search) { return $search.DirectoryName }
         }
     }
     return $null
@@ -240,7 +250,6 @@ function Auto-Detect-GenshinPath {
 # --- GUI 初始化 ---
 Load-BetterGIConfigs
 Load-WeeklyRules
-# Load-EnvConfig 在 Update-PathLabel 中被呼叫，或在初始化時呼叫
 
 $Form = New-Object System.Windows.Forms.Form
 $Form.Text = $WindowTitle
@@ -253,8 +262,16 @@ $Form.Add_FormClosing({
     if ($Script:IsDirty) {
         if ([System.Windows.Forms.MessageBox]::Show("設定未儲存，確定要離開？", "警告", "YesNo") -eq "No") { $e.Cancel = $true; return }
     }
-    if (Get-ScriptsHash -ne $Global:InitialHash) {
-        if ([System.Windows.Forms.MessageBox]::Show("腳本已變更，是否同步至 GitHub？", "同步", "YesNo") -eq "Yes") {
+    
+    # [修正] 讀取上次發布的雜湊
+    $LastHash = ""
+    if (Test-Path $HashFile) { $LastHash = Get-Content $HashFile -Raw }
+    
+    $CurrentHash = Get-CurrentScriptsHash
+    
+    # 如果現在的雜湊跟上次紀錄的不一樣 -> 代表有變動
+    if ($CurrentHash -ne $LastHash) {
+        if ([System.Windows.Forms.MessageBox]::Show("偵測到腳本核心已變更 (與上次發布不同)，是否同步至 GitHub？", "版本控制", "YesNo") -eq "Yes") {
             Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PublishScript`""
         }
     }
@@ -446,7 +463,7 @@ function Update-PathLabel {
     $lblPath.Text = "目前遊戲路徑: $path"
 }
 
-# [新] 智慧偵測按鈕
+# 智慧偵測按鈕
 Add-ToolBtn "📂 設定原神遊戲路徑 (自動/手動)" "LightYellow" {
     $FoundPath = Auto-Detect-GenshinPath
     $UseAuto = $false
@@ -471,7 +488,6 @@ Add-ToolBtn "📂 設定原神遊戲路徑 (自動/手動)" "LightYellow" {
     }
 
     if ($UseAuto) {
-        # [修正] 存入 EnvConfig.json
         $envData = @{ GenshinPath = $Global:GenshinPath }
         $envData | ConvertTo-Json | Set-Content "$ConfigsDir\EnvConfig.json" -Encoding UTF8
         [System.Windows.Forms.MessageBox]::Show("路徑已儲存！", "設定完成")

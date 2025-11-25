@@ -2,6 +2,7 @@
 LogBackups/
 Flags/
 Configs/*.log
-Configs/DateConfig.map
-Configs/TaskStatus.json
+Configs/*.map
+Configs/*.json
 Configs/Webhook.url
+Configs/ScriptHash.txt
