@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Dashboard V7.8 - 支援原神路徑自動偵測
+# AutoTask Dashboard V7.9 - 路徑偵測回饋優化版
 # =============================================================================
 
 # --- [隱藏 Console 黑窗] ---
@@ -41,7 +41,7 @@ $Global:GenshinPath = ""
 $Global:InitialHash = ""
 $Script:IsDirty = $false
 $Script:IsLoading = $false
-$WindowTitle = "AutoTask 控制台 V7.8"
+$WindowTitle = "AutoTask 控制台 V7.9"
 
 # 字型
 $MainFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10)
@@ -87,7 +87,7 @@ function Load-WeeklyRules {
     $Global:TurbulenceRules = @{ "Monday"="day"; "Tuesday"="day"; "Wednesday"="day"; "Thursday"="day"; "Friday"="day"; "Saturday"="day"; "Sunday"="day" }
     $Global:WeeklyNoShut = @{ "Monday"=$false; "Tuesday"=$false; "Wednesday"=$false; "Thursday"=$false; "Friday"=$false; "Saturday"=$false; "Sunday"=$false }
     $Global:TurbulenceNoShut = @{ "Monday"=$false; "Tuesday"=$false; "Wednesday"=$false; "Thursday"=$false; "Friday"=$false; "Saturday"=$false; "Sunday"=$false }
-    $Global:GenshinPath = "C:\Program Files\Genshin Impact\Genshin Impact Game" # 預設值
+    $Global:GenshinPath = "C:\Program Files\Genshin Impact\Genshin Impact Game" 
 
     if ($wk) {
         foreach ($k in $Global:WeeklyRules.Keys) { if ($wk.$k) { $Global:WeeklyRules[$k] = $wk.$k } }
@@ -172,7 +172,7 @@ function Get-WeekName ($dateObj) { return (@{ "Monday"="週一"; "Tuesday"="週�
 function Mark-Dirty { if (-not $Script:IsLoading) { $Script:IsDirty = $true; $Form.Text = "$WindowTitle * (未儲存)" } }
 function Mark-Clean { $Script:IsDirty = $false; $Form.Text = $WindowTitle }
 
-# [新] 自動偵測原神路徑
+# 自動偵測原神路徑
 function Auto-Detect-GenshinPath {
     $RegPaths = @(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Genshin Impact",
@@ -184,7 +184,6 @@ function Auto-Detect-GenshinPath {
         if (Test-Path $path) {
             $installPath = (Get-ItemProperty $path).InstallLocation
             if ($installPath -and (Test-Path $installPath)) {
-                # 遞迴搜尋 YuanShen.exe (深度2)
                 $GameExe = Get-ChildItem -Path $installPath -Include "YuanShen.exe","GenshinImpact.exe" -Recurse -Depth 2 -File -ErrorAction SilentlyContinue | Select-Object -First 1
                 if ($GameExe) { return $GameExe.DirectoryName }
             }
@@ -341,17 +340,17 @@ $btnWSave.Add_Click({
     if (-not $conf.Turbulence) { $conf | Add-Member -Name "Turbulence" -Value @{} -MemberType NoteProperty }
     if (-not $conf.NoShutdown) { $conf | Add-Member -Name "NoShutdown" -Value @{} -MemberType NoteProperty }
     if (-not $conf.Turbulence.NoShutdown) { $conf.Turbulence | Add-Member -Name "NoShutdown" -Value @{} -MemberType NoteProperty }
+    
+    # 保存原神路徑
+    if ($conf.GenshinPath -eq $null) { $conf | Add-Member -Name "GenshinPath" -Value $Global:GenshinPath -MemberType NoteProperty -Force }
+    else { $conf.GenshinPath = $Global:GenshinPath }
+    
     foreach ($d in $DaysKey) { 
         $conf.$d = $WInputs[$d].Text 
         $conf.Turbulence.$d = $TInputs[$d].Text
         $conf.NoShutdown.$d = $WShutChecks[$d].Checked
         $conf.Turbulence.NoShutdown.$d = $TShutChecks[$d].Checked
     }
-    
-    # [新] 儲存原神路徑
-    if ($conf.GenshinPath -eq $null) { $conf | Add-Member -Name "GenshinPath" -Value "" -MemberType NoteProperty }
-    $conf.GenshinPath = $Global:GenshinPath
-    
     $conf | ConvertTo-Json -Depth 4 | Set-Content $WeeklyConf
     Load-WeeklyRules; [System.Windows.Forms.MessageBox]::Show("設定已儲存！"); Load-GridData
 })
@@ -396,48 +395,36 @@ $TabTools = New-Object System.Windows.Forms.TabPage; $TabTools.Text = "[TOOL] �
 $flpTools = New-Object System.Windows.Forms.FlowLayoutPanel; $flpTools.Dock="Fill"; $flpTools.FlowDirection="TopDown"; $flpTools.Padding="20"; $flpTools.AutoSize=$true
 function Add-ToolBtn ($text, $color, $action) { $btn = New-Object System.Windows.Forms.Button; $btn.Text=$text; $btn.Width=400; $btn.Height=50; $btn.BackColor=$color; $btn.Font=$BoldFont; $btn.Margin="0,0,0,15"; $btn.Add_Click($action); $flpTools.Controls.Add($btn) }
 
-# [新] 自動偵測原神路徑
-function Auto-Detect-GenshinPath {
-    $RegPaths = @(
-        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Genshin Impact",
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Genshin Impact",
-        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\原神",
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\原神"
-    )
-    foreach ($path in $RegPaths) {
-        if (Test-Path $path) {
-            $installPath = (Get-ItemProperty $path).InstallLocation
-            if ($installPath -and (Test-Path $installPath)) {
-                # 遞迴搜尋 YuanShen.exe (深度2)
-                $GameExe = Get-ChildItem -Path $installPath -Include "YuanShen.exe","GenshinImpact.exe" -Recurse -Depth 2 -File -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($GameExe) { return $GameExe.DirectoryName }
-            }
-        }
-    }
-    return $null
-}
-
-# [更新] 設定路徑按鈕
+# [新] 智慧偵測按鈕
 Add-ToolBtn "📂 設定原神遊戲路徑 (自動/手動)" "LightYellow" {
     $FoundPath = Auto-Detect-GenshinPath
     $UseAuto = $false
+    
     if ($FoundPath) {
-        if ([System.Windows.Forms.MessageBox]::Show("已自動偵測到遊戲路徑：`n$FoundPath`n`n是否直接使用？", "路徑偵測", "YesNo", "Question") -eq "Yes") {
+        $res = [System.Windows.Forms.MessageBox]::Show("✅ 自動偵測成功！`n`n找到路徑：`n$FoundPath`n`n是否直接使用此路徑？", "偵測結果", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
+        if ($res -eq "Yes") {
             $Global:GenshinPath = $FoundPath
             $UseAuto = $true
         }
-    }
-    if (-not $UseAuto) {
-        $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = "請選擇包含 YuanShen.exe 的資料夾"
-        if ($f.ShowDialog() -eq "OK") { $Global:GenshinPath = $f.SelectedPath; $UseAuto = $true }
+    } else {
+        [System.Windows.Forms.MessageBox]::Show("❌ 自動偵測失敗。`n`n無法在標準安裝位置找到原神。`n請在接下來的視窗中手動選擇 'Genshin Impact Game' 資料夾。", "偵測結果", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
     }
     
+    if (-not $UseAuto) {
+        $f = New-Object System.Windows.Forms.FolderBrowserDialog
+        $f.Description = "請選擇包含 YuanShen.exe / GenshinImpact.exe 的資料夾"
+        if ($f.ShowDialog() -eq "OK") {
+            $Global:GenshinPath = $f.SelectedPath
+            $UseAuto = $true
+        }
+    }
+
     if ($UseAuto) {
         $conf = Get-JsonConf $WeeklyConf
         if ($conf -eq $null) { $conf = @{} }
         $conf | Add-Member -Name "GenshinPath" -Value $Global:GenshinPath -MemberType NoteProperty -Force
         $conf | ConvertTo-Json -Depth 4 | Set-Content $WeeklyConf
-        [System.Windows.Forms.MessageBox]::Show("路徑已儲存：`n$Global:GenshinPath")
+        [System.Windows.Forms.MessageBox]::Show("路徑已儲存：`n$Global:GenshinPath", "設定完成", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
     }
 }
 
