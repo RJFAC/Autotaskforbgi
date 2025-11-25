@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Dashboard V7.4 - 介面排版修復 & 紊亂期不關機功能
+# AutoTask Dashboard V7.7 - 支援原神路徑設定
 # =============================================================================
 
 # --- [隱藏 Console 黑窗] ---
@@ -13,6 +13,7 @@ if ($hwnd -ne [IntPtr]::Zero) { $win::ShowWindow($hwnd, 0) }
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName Microsoft.VisualBasic 
 
 # --- [定義檔案路徑] ---
 $Dir = "C:\AutoTask"
@@ -35,13 +36,14 @@ $Global:ConfigList = @()
 $Global:WeeklyRules = @{}
 $Global:TurbulenceRules = @{}
 $Global:WeeklyNoShut = @{} 
-$Global:TurbulenceNoShut = @{} # [新] 紊亂期不關機設定
+$Global:TurbulenceNoShut = @{}
+$Global:GenshinPath = "" # [新] 遊戲路徑
 $Global:InitialHash = ""
 $Script:IsDirty = $false
 $Script:IsLoading = $false
-$WindowTitle = "AutoTask 控制台 V7.4"
+$WindowTitle = "AutoTask 控制台 V7.7"
 
-# 字型設定
+# 字型
 $MainFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10)
 $BoldFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10, [System.Drawing.FontStyle]::Bold)
 $TitleFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 12, [System.Drawing.FontStyle]::Bold)
@@ -81,35 +83,32 @@ function Load-BetterGIConfigs {
 function Load-WeeklyRules {
     $wk = Get-JsonConf $WeeklyConf
     
-    # 初始化預設結構
     $Global:WeeklyRules = @{ "Monday"="monday"; "Tuesday"="day"; "Wednesday"="day"; "Thursday"="day"; "Friday"="day"; "Saturday"="day"; "Sunday"="day" }
     $Global:TurbulenceRules = @{ "Monday"="day"; "Tuesday"="day"; "Wednesday"="day"; "Thursday"="day"; "Friday"="day"; "Saturday"="day"; "Sunday"="day" }
     $Global:WeeklyNoShut = @{ "Monday"=$false; "Tuesday"=$false; "Wednesday"=$false; "Thursday"=$false; "Friday"=$false; "Saturday"=$false; "Sunday"=$false }
     $Global:TurbulenceNoShut = @{ "Monday"=$false; "Tuesday"=$false; "Wednesday"=$false; "Thursday"=$false; "Friday"=$false; "Saturday"=$false; "Sunday"=$false }
+    $Global:GenshinPath = "C:\Program Files\Genshin Impact\Genshin Impact Game" # 預設值
 
     if ($wk) {
-        # 載入一般週排程
         foreach ($k in $Global:WeeklyRules.Keys) { if ($wk.$k) { $Global:WeeklyRules[$k] = $wk.$k } }
         if ($wk.NoShutdown) {
             foreach ($k in $Global:WeeklyNoShut.Keys) { 
                 if ($wk.NoShutdown.$k -ne $null) { $Global:WeeklyNoShut[$k] = [bool]$wk.NoShutdown.$k } 
             }
         }
-        
-        # 載入紊亂期設定
         if ($wk.Turbulence) {
             foreach ($k in $Global:TurbulenceRules.Keys) { if ($wk.Turbulence.$k) { $Global:TurbulenceRules[$k] = $wk.Turbulence.$k } }
-            # [新] 載入紊亂期不關機
             if ($wk.Turbulence.NoShutdown) {
                  foreach ($k in $Global:TurbulenceNoShut.Keys) {
                     if ($wk.Turbulence.NoShutdown.$k -ne $null) { $Global:TurbulenceNoShut[$k] = [bool]$wk.Turbulence.NoShutdown.$k }
                  }
             }
         }
+        # [新] 讀取遊戲路徑
+        if ($wk.GenshinPath) { $Global:GenshinPath = $wk.GenshinPath }
     }
 }
 
-# 判斷是否為版本更新日
 function Test-GenshinUpdateDay ($CheckDate) {
     $RefDate = [datetime]"2024-08-28"
     $DiffDays = ($CheckDate.Date - $RefDate).Days
@@ -117,7 +116,6 @@ function Test-GenshinUpdateDay ($CheckDate) {
     return $false
 }
 
-# 判斷是否為紊亂爆發期
 function Test-TurbulencePeriod ($CheckDate) {
     $RefDate = [datetime]"2024-08-28"
     $DiffDays = ($CheckDate.Date - $RefDate).Days
@@ -131,17 +129,14 @@ function Test-TurbulencePeriod ($CheckDate) {
 function Get-DisplayConfigName ($dateObj) {
     $dStr = $dateObj.ToString("yyyyMMdd")
     $dWeek = $dateObj.DayOfWeek.ToString()
-    
     if (Test-Path $DateMap) {
         $map = Get-Content $DateMap
         foreach ($line in $map) { if ($line -match "^$dStr=(.+)$") { return "$($matches[1]) (指定)" } }
     }
-    
     if (Test-TurbulencePeriod $dateObj) {
         $tConf = $Global:TurbulenceRules.$dWeek
         if ($tConf) { return "$tConf (紊亂期)" }
     }
-
     return "$($Global:WeeklyRules.$dWeek) (每週)"
 }
 
@@ -165,24 +160,16 @@ function Get-StatusText {
 function Get-ShutdownPolicy ($dateObj) {
     $dStr = $dateObj.ToString("yyyyMMdd")
     $dWeek = $dateObj.DayOfWeek.ToString()
-    
-    # 1. 指定日期 (最高優先)
     if (Test-Path $NoShutdownLog) { if ((Get-Content $NoShutdownLog) -contains $dStr) { return "不關機 (指定)" } }
-    
-    # 2. [新] 紊亂期設定 (次高優先)
     if (Test-TurbulencePeriod $dateObj) {
         if ($Global:TurbulenceNoShut.$dWeek) { return "不關機 (紊亂)" }
     }
-    
-    # 3. 一般每週設定
     if ($Global:WeeklyNoShut.$dWeek) { return "不關機 (每週)" }
-    
     return "自動關機"
 }
 
 function Get-WeekName ($dateObj) { return (@{ "Monday"="週一"; "Tuesday"="週二"; "Wednesday"="週三"; "Thursday"="週四"; "Friday"="週五"; "Saturday"="週六"; "Sunday"="週日" })[$dateObj.DayOfWeek.ToString()] }
 
-# --- 變更追蹤 ---
 function Mark-Dirty { if (-not $Script:IsLoading) { $Script:IsDirty = $true; $Form.Text = "$WindowTitle * (未儲存)" } }
 function Mark-Clean { $Script:IsDirty = $false; $Form.Text = $WindowTitle }
 
@@ -234,12 +221,12 @@ function Update-StatusUI {
     $lblInfo.ForeColor = $st.Color
 }
 
-# === 分頁 2: 排程網格 (省略重複代碼，邏輯與前版相同) ===
+# === 分頁 2: 排程網格 (保持 V7.4 不變) ===
 $TabGrid = New-Object System.Windows.Forms.TabPage; $TabGrid.Text = "[GRID] 排程編輯器"
 $pTool = New-Object System.Windows.Forms.Panel; $pTool.Dock="Top"; $pTool.Height=40
 $btnGSave = New-Object System.Windows.Forms.Button; $btnGSave.Text="[SAVE]"; $btnGSave.Dock="Left"; $btnGSave.Width=100; $btnGSave.BackColor="LightGreen"; $btnGSave.Font=$BoldFont
 $btnGSave.Add_Click({ Save-GridData })
-$lblHint = New-Object System.Windows.Forms.Label; $lblHint.Text="操作提示: 批量勾選不關機 (Ctrl/Shift) | 雙擊配置欄 | Ctrl+C/V | Del"; $lblHint.Dock="Fill"; $lblHint.TextAlign="MiddleLeft"; $lblHint.Padding="10,0,0,0"; $lblHint.Font=$MainFont
+$lblHint = New-Object System.Windows.Forms.Label; $lblHint.Text="操作提示: 支援批量勾選 [不關機] (Ctrl/Shift) | 雙擊配置欄排序 | Ctrl+C/V | Del"; $lblHint.Dock="Fill"; $lblHint.TextAlign="MiddleLeft"; $lblHint.Padding="10,0,0,0"; $lblHint.Font=$MainFont
 $pTool.Controls.Add($lblHint); $pTool.Controls.Add($btnGSave)
 $grid = New-Object System.Windows.Forms.DataGridView; $grid.Dock="Fill"; $grid.EditMode="EditProgrammatically"; $grid.Font=$MonoFont; $grid.MultiSelect=$true
 $grid.Columns.Add("Date","日期"); $grid.Columns[0].ReadOnly=$true; $grid.Columns[0].Width=120
@@ -261,29 +248,15 @@ function Load-GridData {
     $Start = (Get-Date).AddHours(-3).Date
     for ($i=0; $i -lt 90; $i++) {
         $d=$Start.AddDays($i); $dS=$d.ToString("yyyyMMdd"); $wS=$d.DayOfWeek.ToString()
-        
-        # [更新] 顯示邏輯 (紊亂期 > 一般)
         $def=$Global:WeeklyRules[$wS]
         $ITDay = Test-TurbulencePeriod $d
-        if ($ITDay -gt 0) { 
-             $tConf = $Global:TurbulenceRules[$wS]
-             if ($tConf) { $def = "$tConf" }
-        }
-
+        if ($ITDay -gt 0) { $tConf = $Global:TurbulenceRules[$wS]; if ($tConf) { $def = "$tConf" } }
         $cur=$def; $isO=$false; $isP=$false
         if ($PauseData -contains $dS) { $cur="PAUSE"; $isP=$true } elseif ($MapData.ContainsKey($dS)) { $cur=$MapData[$dS]; $isO=$true }
-        
-        # [更新] 不關機顯示邏輯
-        $isS = $NoShutData -contains $dS
-        if (Test-TurbulencePeriod $d) {
-            if ($Global:TurbulenceNoShut[$wS]) { $isS = $true }
-        } else {
-            if ($Global:WeeklyNoShut[$wS]) { $isS = $true }
-        }
-
+        $isS = $NoShutData -contains $dS; 
+        if (Test-TurbulencePeriod $d) { if ($Global:TurbulenceNoShut[$wS]) { $isS = $true } } else { if ($Global:WeeklyNoShut[$wS]) { $isS = $true } }
         $note=""; if(Test-GenshinUpdateDay $d){$note="⚠️ 版本更新"}
         if ($ITDay -gt 0) { $note += " 🔥 紊亂(Day$ITDay)" }
-
         $idx=$grid.Rows.Add($d.ToString("yyyy/MM/dd"), $wS, $def, $cur, $isS, $note)
         $row=$grid.Rows[$idx]; $row.Tag=$dS
         if($isP){$row.Cells[3].Style.BackColor="LightCoral";$row.Cells[3].Style.ForeColor="White"}elseif($isO){$row.Cells[3].Style.ForeColor="Blue";$row.Cells[3].Style.Font=$BoldFont}
@@ -297,20 +270,9 @@ function Save-GridData {
     foreach ($r in $grid.Rows) {
         $k=$r.Tag; $def=$r.Cells[2].Value; $cur=$r.Cells[3].Value; $shut=$r.Cells[4].Value
         if ($cur-eq"PAUSE") { $newP+=$k } elseif ($cur-ne$def) { $newMap+="$k=$cur" }
-        
-        # [更新] 存檔時判斷是否與預設值不同
-        $dObj = [DateTime]::ParseExact($k, "yyyyMMdd", $null)
-        $wDay = $dObj.DayOfWeek.ToString()
-        $defShut = $false
-        
-        if (Test-TurbulencePeriod $dObj) {
-             if ($Global:TurbulenceNoShut[$wDay]) { $defShut = $true }
-        } else {
-             if ($Global:WeeklyNoShut[$wDay]) { $defShut = $true }
-        }
-        
-        # 只儲存 "額外指定的不關機" (如果預設關機但這裡勾選了)
-        # 目前邏輯簡化：只要有勾且非預設，就寫入 NoShutdown.log
+        $dObj=[DateTime]::ParseExact($k, "yyyyMMdd", $null); $wS=$dObj.DayOfWeek.ToString()
+        $defShut=$false
+        if (Test-TurbulencePeriod $dObj) { if($Global:TurbulenceNoShut[$wS]){$defShut=$true} } else { if($Global:WeeklyNoShut[$wS]){$defShut=$true} }
         if ($shut -and -not $defShut) { $newS += $k }
     }
     $newMap|Sort|Set-Content $DateMap -Enc UTF8; $newP|Sort|Set-Content $PauseLog -Enc UTF8; $newS|Sort|Set-Content $NoShutdownLog -Enc UTF8
@@ -319,7 +281,7 @@ function Save-GridData {
 $TabGrid.Controls.Add($grid); $TabGrid.Controls.Add($pTool)
 
 # =============================================================================
-# 分頁 3: 每週配置 GUI (V7.2 - 雙區塊 + 不關機設定)
+# 分頁 3: 每週配置 GUI
 # =============================================================================
 $TabWeekly = New-Object System.Windows.Forms.TabPage; $TabWeekly.Text = "⚙️ 每週預設設定"
 $pnlW = New-Object System.Windows.Forms.Panel; $pnlW.Dock="Fill"; $pnlW.AutoScroll=$true
@@ -334,12 +296,9 @@ function Build-WRow ($parent, $y, $txt, $key, $store, $storeCheck) {
     $b.Add_Click({ param($s,$e); $n=Show-ConfigSelectorGUI $this.Tag.Text; if($n-ne$null){$this.Tag.Text=$n} }.GetNewClosure())
     $parent.Controls.AddRange(@($l,$t,$b))
     $store[$key] = $t
-    
-    # [修正] 不關機 Checkbox 位置調整
     if ($storeCheck -ne $null) {
         $chk = New-Object System.Windows.Forms.CheckBox; $chk.Text="不關機"; $chk.Location="380,$y"; $chk.AutoSize=$true; $chk.Font=$MainFont
-        $parent.Controls.Add($chk)
-        $storeCheck[$key] = $chk
+        $parent.Controls.Add($chk); $storeCheck[$key] = $chk
     }
 }
 
@@ -353,27 +312,27 @@ $lblW2 = New-Object System.Windows.Forms.Label; $lblW2.Text="=== 紊亂爆發期
 $lblW3 = New-Object System.Windows.Forms.Label; $lblW3.Text="(版本更新後第8~17天，優先級高於一般排程)"; $lblW3.Location="20,$($y+25)"; $lblW3.AutoSize=$true; $lblW3.Font=$MainFont; $lblW3.ForeColor="Gray"
 $pnlW.Controls.AddRange(@($lblW2, $lblW3))
 $y+=60
-# [修正] 這裡也傳入 TShutChecks
 for($i=0;$i-lt 7;$i++) { Build-WRow $pnlW $y $DaysTxt[$i] $DaysKey[$i] $TInputs $TShutChecks; $y+=40 }
 
-# [修正] 儲存按鈕移到底部，避免重疊
 $y+=30
 $btnWSave = New-Object System.Windows.Forms.Button; $btnWSave.Text="儲存所有設定"; $btnWSave.Location="120,$y"; $btnWSave.Size="250,50"; $btnWSave.BackColor="LightGreen"; $btnWSave.Font=$BoldFont
 $btnWSave.Add_Click({
     $conf = Get-JsonConf $WeeklyConf
     if (-not $conf.Turbulence) { $conf | Add-Member -Name "Turbulence" -Value @{} -MemberType NoteProperty }
     if (-not $conf.NoShutdown) { $conf | Add-Member -Name "NoShutdown" -Value @{} -MemberType NoteProperty }
-    
-    # 確保 Turbulence.NoShutdown 存在
     if (-not $conf.Turbulence.NoShutdown) { $conf.Turbulence | Add-Member -Name "NoShutdown" -Value @{} -MemberType NoteProperty }
-
     foreach ($d in $DaysKey) { 
         $conf.$d = $WInputs[$d].Text 
         $conf.Turbulence.$d = $TInputs[$d].Text
         $conf.NoShutdown.$d = $WShutChecks[$d].Checked
         $conf.Turbulence.NoShutdown.$d = $TShutChecks[$d].Checked
     }
-    $conf | ConvertTo-Json -Depth 4 | Set-Content $WeeklyConf # Depth 4 確保巢狀物件正確儲存
+    
+    # [新] 儲存原神路徑
+    if ($conf.GenshinPath -eq $null) { $conf | Add-Member -Name "GenshinPath" -Value "" -MemberType NoteProperty }
+    $conf.GenshinPath = $Global:GenshinPath
+    
+    $conf | ConvertTo-Json -Depth 4 | Set-Content $WeeklyConf
     Load-WeeklyRules; [System.Windows.Forms.MessageBox]::Show("設定已儲存！"); Load-GridData
 })
 $pnlW.Controls.Add($btnWSave); $TabWeekly.Controls.Add($pnlW)
@@ -385,11 +344,7 @@ function Init-WeeklyTab {
             if ($WInputs.ContainsKey($d)) { $WInputs[$d].Text = $wk.$d }
             if ($wk.Turbulence -and $TInputs.ContainsKey($d)) { $TInputs[$d].Text = $wk.Turbulence.$d }
             if ($wk.NoShutdown -and $WShutChecks.ContainsKey($d)) { $WShutChecks[$d].Checked = [bool]$wk.NoShutdown.$d }
-            
-            # [修正] 讀取紊亂期不關機
-            if ($wk.Turbulence.NoShutdown -and $TShutChecks.ContainsKey($d)) {
-                $TShutChecks[$d].Checked = [bool]$wk.Turbulence.NoShutdown.$d
-            }
+            if ($wk.Turbulence.NoShutdown -and $TShutChecks.ContainsKey($d)) { $TShutChecks[$d].Checked = [bool]$wk.Turbulence.NoShutdown.$d }
         }
     }
 }
@@ -398,7 +353,7 @@ function Init-WeeklyTab {
 function Show-ConfigSelectorGUI {
     param([string]$CurrentSelection) 
     $SelForm = New-Object System.Windows.Forms.Form; $SelForm.Text="配置選擇 (拖曳排序)"; $SelForm.Size="700,500"; $SelForm.StartPosition="CenterParent"; $SelForm.Font=$MainFont
-    $lblSrc = New-Object System.Windows.Forms.Label; $lblSrc.Text="可用配置"; $lblSrc.Location="20,10"; $lblSrc.AutoSize=$true
+    $lblSrc = New-Object System.Windows.Forms.Label; $lblSrc.Text="可用配置 (可多選)"; $lblSrc.Location="20,10"; $lblSrc.AutoSize=$true
     $listSrc = New-Object System.Windows.Forms.ListBox; $listSrc.Location="20,30"; $listSrc.Size="250,350"; $listSrc.SelectionMode="MultiExtended"
     $RealConfigs = $Global:ConfigList | Where-Object { $_ -ne "PAUSE" }; $listSrc.Items.AddRange($RealConfigs)
     $lblDst = New-Object System.Windows.Forms.Label; $lblDst.Text="執行佇列"; $lblDst.Location="380,10"; $lblDst.AutoSize=$true
@@ -414,16 +369,52 @@ function Show-ConfigSelectorGUI {
     $SelForm.Controls.AddRange(@($lblSrc, $listSrc, $lblDst, $listDst, $btnAdd, $btnRem, $btnOk, $btnCancel)); $SelForm.AcceptButton = $btnOk; if ($SelForm.ShowDialog() -eq "OK") { $f=@(); foreach($i in $listDst.Items){$f+=$i}; return ($f -join ",") } else { return $null }
 }
 
-# ... (TabTools 與 TabLogs 保持不變) ...
+# =============================================================================
+# 分頁 4: 工具與維護
+# =============================================================================
 $TabTools = New-Object System.Windows.Forms.TabPage; $TabTools.Text = "[TOOL] 工具與維護" 
 $flpTools = New-Object System.Windows.Forms.FlowLayoutPanel; $flpTools.Dock="Fill"; $flpTools.FlowDirection="TopDown"; $flpTools.Padding="20"; $flpTools.AutoSize=$true
 function Add-ToolBtn ($text, $color, $action) { $btn = New-Object System.Windows.Forms.Button; $btn.Text=$text; $btn.Width=400; $btn.Height=50; $btn.BackColor=$color; $btn.Font=$BoldFont; $btn.Margin="0,0,0,15"; $btn.Add_Click($action); $flpTools.Controls.Add($btn) }
+
+# [新] 原神路徑設定功能
+Add-ToolBtn "📂 設定原神遊戲路徑 (預下載用)" "LightYellow" {
+    $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
+    $folderBrowser.Description = "請選擇 Genshin Impact Game 資料夾 (包含 YuanShen.exe 的資料夾)"
+    if ($folderBrowser.ShowDialog() -eq "OK") {
+        $Global:GenshinPath = $folderBrowser.SelectedPath
+        [System.Windows.Forms.MessageBox]::Show("路徑已暫存，請至 [每週預設設定] 分頁按下 [儲存所有設定] 以生效！")
+    }
+}
+
+Add-ToolBtn "[COPY] 複製配置組" "LightBlue" { 
+    $sel = Show-ConfigSelectorGUI ""; 
+    if($sel) { 
+        $sel = ($sel -split ",")[0]; 
+        $newName = [Microsoft.VisualBasic.Interaction]::InputBox("請輸入新配置組名稱:", "複製配置", "$sel-Copy");
+        if (-not [string]::IsNullOrWhiteSpace($newName)) {
+            $src = Join-Path $BetterGI_UserDir "$sel.json";
+            $dst = Join-Path $BetterGI_UserDir "$newName.json";
+            if (Test-Path $src) {
+                Copy-Item $src $dst -Force;
+                $j = Get-Content $dst -Raw -Enc UTF8 | ConvertFrom-Json;
+                $j.Name = $newName;
+                $j | ConvertTo-Json -Depth 20 | Set-Content $dst -Enc UTF8;
+                [System.Windows.Forms.MessageBox]::Show("已複製為: $newName");
+                Load-BetterGIConfigs;
+            }
+        }
+    } 
+}
+Add-ToolBtn "[SYNC] 同步配置檔名與內部名稱" "LightBlue" { $r=[System.Windows.Forms.MessageBox]::Show("修正 BetterGI 配置檔內部 Name 參數？","確認","YesNo"); if($r-eq"Yes"){ $c=0;if(Test-Path $BetterGI_UserDir){Get-ChildItem "$BetterGI_UserDir\*.json"|ForEach{try{$j=Get-Content $_.FullName -Raw -Enc UTF8|ConvertFrom-Json;if($j.Name-ne$_.BaseName){$j.Name=$_.BaseName;$j|ConvertTo-Json -Depth 20|Set-Content $_.FullName -Enc UTF8;$c++}}catch{}}};[System.Windows.Forms.MessageBox]::Show("修正了 $c 個檔案。");Load-BetterGIConfigs } }
 Add-ToolBtn "[STOP] 強制停止所有任務" "LightCoral" { if([System.Windows.Forms.MessageBox]::Show("確定停止？","警告","YesNo")-eq"Yes"){ Start-Process powershell -Arg "-NoProfile -ExecutionPolicy Bypass -File `"$StopScript`"" -Verb RunAs } }
 Add-ToolBtn "[FIX] 修復檔案權限" "LightBlue" { Start-Process powershell -Arg "-Command `"takeown /F '$Dir' /R /D Y; icacls '$Dir' /grant Everyone:(OI)(CI)F /T /C`"" -Verb RunAs; [System.Windows.Forms.MessageBox]::Show("完成") }
 Add-ToolBtn "[GIT] 發布至 GitHub" "LightGray" { if([System.Windows.Forms.MessageBox]::Show("確定發布？","確認","YesNo")-eq"Yes"){ Start-Process powershell -Arg "-NoProfile -ExecutionPolicy Bypass -File `"$PublishScript`"" } }
 Add-ToolBtn "[RDP] 修復 RDP 最小化" "LightGray" { Start-Process powershell -Arg "-Command `"reg add 'HKLM\Software\Microsoft\Terminal Server Client' /v 'RemoteDesktop_SuppressWhenMinimized' /t REG_DWORD /d 2 /f`"" -Verb RunAs; [System.Windows.Forms.MessageBox]::Show("完成") }
 $TabTools.Controls.Add($flpTools)
 
+# =============================================================================
+# 分頁 5: 日誌檢視
+# =============================================================================
 $TabLogs = New-Object System.Windows.Forms.TabPage; $TabLogs.Text = "[LOG] 日誌檢視" 
 $pnlLogTop = New-Object System.Windows.Forms.Panel; $pnlLogTop.Dock="Top"; $pnlLogTop.Height=40
 $cbLogFiles = New-Object System.Windows.Forms.ComboBox; $cbLogFiles.Width=300; $cbLogFiles.Location="10,10"; $cbLogFiles.DropDownStyle="DropDownList"; $cbLogFiles.Font=$MainFont
