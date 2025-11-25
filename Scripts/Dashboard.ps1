@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Dashboard V7.9 - 路徑偵測回饋優化版
+# AutoTask Dashboard V7.10 - 增強原神路徑偵測
 # =============================================================================
 
 # --- [隱藏 Console 黑窗] ---
@@ -41,7 +41,7 @@ $Global:GenshinPath = ""
 $Global:InitialHash = ""
 $Script:IsDirty = $false
 $Script:IsLoading = $false
-$WindowTitle = "AutoTask 控制台 V7.9"
+$WindowTitle = "AutoTask 控制台 V7.10"
 
 # 字型
 $MainFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10)
@@ -172,21 +172,52 @@ function Get-WeekName ($dateObj) { return (@{ "Monday"="週一"; "Tuesday"="週�
 function Mark-Dirty { if (-not $Script:IsLoading) { $Script:IsDirty = $true; $Form.Text = "$WindowTitle * (未儲存)" } }
 function Mark-Clean { $Script:IsDirty = $false; $Form.Text = $WindowTitle }
 
-# 自動偵測原神路徑
+# [修正] 增強版原神路徑自動偵測
 function Auto-Detect-GenshinPath {
+    $GameExes = @("YuanShen.exe", "GenshinImpact.exe")
+    
+    # 策略 1: 檢查正在運行的進程 (最準確)
+    foreach ($exe in $GameExes) {
+        $proc = Get-Process -Name ($exe -replace ".exe","") -ErrorAction SilentlyContinue
+        if ($proc) {
+            $path = $proc.MainModule.FileName
+            if ($path) { return (Split-Path $path -Parent) }
+        }
+    }
+
+    # 策略 2: 檢查 Windows 註冊表
     $RegPaths = @(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Genshin Impact",
         "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Genshin Impact",
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\原神",
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\原神"
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\原神",
+        "HKCU:\Software\miHoYo\Genshin Impact"
     )
-    foreach ($path in $RegPaths) {
-        if (Test-Path $path) {
-            $installPath = (Get-ItemProperty $path).InstallLocation
-            if ($installPath -and (Test-Path $installPath)) {
-                $GameExe = Get-ChildItem -Path $installPath -Include "YuanShen.exe","GenshinImpact.exe" -Recurse -Depth 2 -File -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($GameExe) { return $GameExe.DirectoryName }
+    foreach ($reg in $RegPaths) {
+        if (Test-Path $reg) {
+            $p1 = (Get-ItemProperty $reg).InstallLocation
+            $p2 = (Get-ItemProperty $reg).InstallPath
+            foreach ($basePath in @($p1, $p2)) {
+                if (-not [string]::IsNullOrWhiteSpace($basePath) -and (Test-Path $basePath)) {
+                    $search = Get-ChildItem -Path $basePath -Include $GameExes -Recurse -Depth 3 -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($search) { return $search.DirectoryName }
+                }
             }
+        }
+    }
+
+    # 策略 3: 暴力搜尋常見路徑
+    $CommonPaths = @(
+        "C:\Program Files\Genshin Impact",
+        "C:\Program Files\HoYoPlay\games\Genshin Impact",
+        "D:\Genshin Impact",
+        "D:\Program Files\Genshin Impact",
+        "E:\Genshin Impact"
+    )
+    foreach ($cp in $CommonPaths) {
+        if (Test-Path $cp) {
+            $search = Get-ChildItem -Path $cp -Include $GameExes -Recurse -Depth 3 -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($search) { return $search.DirectoryName }
         }
     }
     return $null
@@ -340,17 +371,17 @@ $btnWSave.Add_Click({
     if (-not $conf.Turbulence) { $conf | Add-Member -Name "Turbulence" -Value @{} -MemberType NoteProperty }
     if (-not $conf.NoShutdown) { $conf | Add-Member -Name "NoShutdown" -Value @{} -MemberType NoteProperty }
     if (-not $conf.Turbulence.NoShutdown) { $conf.Turbulence | Add-Member -Name "NoShutdown" -Value @{} -MemberType NoteProperty }
-    
-    # 保存原神路徑
-    if ($conf.GenshinPath -eq $null) { $conf | Add-Member -Name "GenshinPath" -Value $Global:GenshinPath -MemberType NoteProperty -Force }
-    else { $conf.GenshinPath = $Global:GenshinPath }
-    
     foreach ($d in $DaysKey) { 
         $conf.$d = $WInputs[$d].Text 
         $conf.Turbulence.$d = $TInputs[$d].Text
         $conf.NoShutdown.$d = $WShutChecks[$d].Checked
         $conf.Turbulence.NoShutdown.$d = $TShutChecks[$d].Checked
     }
+    
+    # 保存原神路徑
+    if ($conf.GenshinPath -eq $null) { $conf | Add-Member -Name "GenshinPath" -Value $Global:GenshinPath -MemberType NoteProperty -Force }
+    else { $conf.GenshinPath = $Global:GenshinPath }
+    
     $conf | ConvertTo-Json -Depth 4 | Set-Content $WeeklyConf
     Load-WeeklyRules; [System.Windows.Forms.MessageBox]::Show("設定已儲存！"); Load-GridData
 })
