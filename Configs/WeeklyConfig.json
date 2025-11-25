@@ -13,6 +13,25 @@
                        "Thursday":  "IT_Thursday",
                        "Friday":  "IT_Friday",
                        "Saturday":  "IT_Saturday",
-                       "Sunday":  "IT_Sunday"
-                   }
+                       "Sunday":  "IT_Sunday",
+                       "NoShutdown":  {
+                                          "Thursday":  false,
+                                          "Tuesday":  false,
+                                          "Saturday":  false,
+                                          "Wednesday":  false,
+                                          "Sunday":  false,
+                                          "Friday":  false,
+                                          "Monday":  false
+                                      }
+                   },
+    "NoShutdown":  {
+                       "Thursday":  false,
+                       "Tuesday":  false,
+                       "Saturday":  false,
+                       "Wednesday":  false,
+                       "Sunday":  false,
+                       "Friday":  false,
+                       "Monday":  false
+                   },
+    "GenshinPath":  "C:\\Program Files\\HoYoPlay\\games\\Genshin Impact Game"
 }

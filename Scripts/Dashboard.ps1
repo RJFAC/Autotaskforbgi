@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Dashboard V7.7 - 支援原神路徑設定
+# AutoTask Dashboard V7.8 - 支援原神路徑自動偵測
 # =============================================================================
 
 # --- [隱藏 Console 黑窗] ---
@@ -37,11 +37,11 @@ $Global:WeeklyRules = @{}
 $Global:TurbulenceRules = @{}
 $Global:WeeklyNoShut = @{} 
 $Global:TurbulenceNoShut = @{}
-$Global:GenshinPath = "" # [新] 遊戲路徑
+$Global:GenshinPath = "" 
 $Global:InitialHash = ""
 $Script:IsDirty = $false
 $Script:IsLoading = $false
-$WindowTitle = "AutoTask 控制台 V7.7"
+$WindowTitle = "AutoTask 控制台 V7.8"
 
 # 字型
 $MainFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10)
@@ -104,7 +104,6 @@ function Load-WeeklyRules {
                  }
             }
         }
-        # [新] 讀取遊戲路徑
         if ($wk.GenshinPath) { $Global:GenshinPath = $wk.GenshinPath }
     }
 }
@@ -173,6 +172,27 @@ function Get-WeekName ($dateObj) { return (@{ "Monday"="週一"; "Tuesday"="週�
 function Mark-Dirty { if (-not $Script:IsLoading) { $Script:IsDirty = $true; $Form.Text = "$WindowTitle * (未儲存)" } }
 function Mark-Clean { $Script:IsDirty = $false; $Form.Text = $WindowTitle }
 
+# [新] 自動偵測原神路徑
+function Auto-Detect-GenshinPath {
+    $RegPaths = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Genshin Impact",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Genshin Impact",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\原神",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\原神"
+    )
+    foreach ($path in $RegPaths) {
+        if (Test-Path $path) {
+            $installPath = (Get-ItemProperty $path).InstallLocation
+            if ($installPath -and (Test-Path $installPath)) {
+                # 遞迴搜尋 YuanShen.exe (深度2)
+                $GameExe = Get-ChildItem -Path $installPath -Include "YuanShen.exe","GenshinImpact.exe" -Recurse -Depth 2 -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($GameExe) { return $GameExe.DirectoryName }
+            }
+        }
+    }
+    return $null
+}
+
 # --- GUI 初始化 ---
 Load-BetterGIConfigs
 Load-WeeklyRules
@@ -221,7 +241,7 @@ function Update-StatusUI {
     $lblInfo.ForeColor = $st.Color
 }
 
-# === 分頁 2: 排程網格 (保持 V7.4 不變) ===
+# === 分頁 2: 排程網格 ===
 $TabGrid = New-Object System.Windows.Forms.TabPage; $TabGrid.Text = "[GRID] 排程編輯器"
 $pTool = New-Object System.Windows.Forms.Panel; $pTool.Dock="Top"; $pTool.Height=40
 $btnGSave = New-Object System.Windows.Forms.Button; $btnGSave.Text="[SAVE]"; $btnGSave.Dock="Left"; $btnGSave.Width=100; $btnGSave.BackColor="LightGreen"; $btnGSave.Font=$BoldFont
@@ -376,13 +396,48 @@ $TabTools = New-Object System.Windows.Forms.TabPage; $TabTools.Text = "[TOOL] �
 $flpTools = New-Object System.Windows.Forms.FlowLayoutPanel; $flpTools.Dock="Fill"; $flpTools.FlowDirection="TopDown"; $flpTools.Padding="20"; $flpTools.AutoSize=$true
 function Add-ToolBtn ($text, $color, $action) { $btn = New-Object System.Windows.Forms.Button; $btn.Text=$text; $btn.Width=400; $btn.Height=50; $btn.BackColor=$color; $btn.Font=$BoldFont; $btn.Margin="0,0,0,15"; $btn.Add_Click($action); $flpTools.Controls.Add($btn) }
 
-# [新] 原神路徑設定功能
-Add-ToolBtn "📂 設定原神遊戲路徑 (預下載用)" "LightYellow" {
-    $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
-    $folderBrowser.Description = "請選擇 Genshin Impact Game 資料夾 (包含 YuanShen.exe 的資料夾)"
-    if ($folderBrowser.ShowDialog() -eq "OK") {
-        $Global:GenshinPath = $folderBrowser.SelectedPath
-        [System.Windows.Forms.MessageBox]::Show("路徑已暫存，請至 [每週預設設定] 分頁按下 [儲存所有設定] 以生效！")
+# [新] 自動偵測原神路徑
+function Auto-Detect-GenshinPath {
+    $RegPaths = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Genshin Impact",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Genshin Impact",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\原神",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\原神"
+    )
+    foreach ($path in $RegPaths) {
+        if (Test-Path $path) {
+            $installPath = (Get-ItemProperty $path).InstallLocation
+            if ($installPath -and (Test-Path $installPath)) {
+                # 遞迴搜尋 YuanShen.exe (深度2)
+                $GameExe = Get-ChildItem -Path $installPath -Include "YuanShen.exe","GenshinImpact.exe" -Recurse -Depth 2 -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($GameExe) { return $GameExe.DirectoryName }
+            }
+        }
+    }
+    return $null
+}
+
+# [更新] 設定路徑按鈕
+Add-ToolBtn "📂 設定原神遊戲路徑 (自動/手動)" "LightYellow" {
+    $FoundPath = Auto-Detect-GenshinPath
+    $UseAuto = $false
+    if ($FoundPath) {
+        if ([System.Windows.Forms.MessageBox]::Show("已自動偵測到遊戲路徑：`n$FoundPath`n`n是否直接使用？", "路徑偵測", "YesNo", "Question") -eq "Yes") {
+            $Global:GenshinPath = $FoundPath
+            $UseAuto = $true
+        }
+    }
+    if (-not $UseAuto) {
+        $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = "請選擇包含 YuanShen.exe 的資料夾"
+        if ($f.ShowDialog() -eq "OK") { $Global:GenshinPath = $f.SelectedPath; $UseAuto = $true }
+    }
+    
+    if ($UseAuto) {
+        $conf = Get-JsonConf $WeeklyConf
+        if ($conf -eq $null) { $conf = @{} }
+        $conf | Add-Member -Name "GenshinPath" -Value $Global:GenshinPath -MemberType NoteProperty -Force
+        $conf | ConvertTo-Json -Depth 4 | Set-Content $WeeklyConf
+        [System.Windows.Forms.MessageBox]::Show("路徑已儲存：`n$Global:GenshinPath")
     }
 }
 
@@ -405,7 +460,7 @@ Add-ToolBtn "[COPY] 複製配置組" "LightBlue" {
         }
     } 
 }
-Add-ToolBtn "[SYNC] 同步配置檔名與內部名稱" "LightBlue" { $r=[System.Windows.Forms.MessageBox]::Show("修正 BetterGI 配置檔內部 Name 參數？","確認","YesNo"); if($r-eq"Yes"){ $c=0;if(Test-Path $BetterGI_UserDir){Get-ChildItem "$BetterGI_UserDir\*.json"|ForEach{try{$j=Get-Content $_.FullName -Raw -Enc UTF8|ConvertFrom-Json;if($j.Name-ne$_.BaseName){$j.Name=$_.BaseName;$j|ConvertTo-Json -Depth 20|Set-Content $_.FullName -Enc UTF8;$c++}}catch{}}};[System.Windows.Forms.MessageBox]::Show("修正了 $c 個檔案。");Load-BetterGIConfigs } }
+Add-ToolBtn "[SYNC] 同步配置檔名與內部名稱" "LightBlue" { $r=[System.Windows.Forms.MessageBox]::Show("掃描並修正 BetterGI 配置檔內部 Name 參數？","確認","YesNo"); if($r-eq"Yes"){ $c=0;if(Test-Path $BetterGI_UserDir){Get-ChildItem "$BetterGI_UserDir\*.json"|ForEach{try{$j=Get-Content $_.FullName -Raw -Enc UTF8|ConvertFrom-Json;if($j.Name-ne$_.BaseName){$j.Name=$_.BaseName;$j|ConvertTo-Json -Depth 20|Set-Content $_.FullName -Enc UTF8;$c++}}catch{}}};[System.Windows.Forms.MessageBox]::Show("修正了 $c 個檔案。");Load-BetterGIConfigs } }
 Add-ToolBtn "[STOP] 強制停止所有任務" "LightCoral" { if([System.Windows.Forms.MessageBox]::Show("確定停止？","警告","YesNo")-eq"Yes"){ Start-Process powershell -Arg "-NoProfile -ExecutionPolicy Bypass -File `"$StopScript`"" -Verb RunAs } }
 Add-ToolBtn "[FIX] 修復檔案權限" "LightBlue" { Start-Process powershell -Arg "-Command `"takeown /F '$Dir' /R /D Y; icacls '$Dir' /grant Everyone:(OI)(CI)F /T /C`"" -Verb RunAs; [System.Windows.Forms.MessageBox]::Show("完成") }
 Add-ToolBtn "[GIT] 發布至 GitHub" "LightGray" { if([System.Windows.Forms.MessageBox]::Show("確定發布？","確認","YesNo")-eq"Yes"){ Start-Process powershell -Arg "-NoProfile -ExecutionPolicy Bypass -File `"$PublishScript`"" } }
