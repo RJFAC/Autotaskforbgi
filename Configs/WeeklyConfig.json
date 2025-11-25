@@ -32,6 +32,5 @@
                        "Sunday":  false,
                        "Friday":  false,
                        "Monday":  false
-                   },
-    "GenshinPath":  "C:\\Program Files\\HoYoPlay\\games\\Genshin Impact Game"
+                   }
 }
