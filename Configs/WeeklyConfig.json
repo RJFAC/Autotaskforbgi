@@ -7,8 +7,8 @@
     "Saturday":  "day",
     "Sunday":  "day",
     "Turbulence":  {
-                       "Monday":  "0 IT_Monday,默认配置",
-                       "Tuesday":  "IT_Tuesday",
+                       "Monday":  "聖遺物狗糧,每日雞腿好感,每日雞腿好感,刷怪物素材,刷怪物素材,刷怪物素材,三次祝聖移湧地脈花,三次祝聖移湧地脈花,三次祝聖移湧地脈花,聖遺物秘境,聖遺物秘境",
+                       "Tuesday":  "每日雞腿好感,每日雞腿好感,每日雞腿好感",
                        "Wednesday":  "IT_Wednesday",
                        "Thursday":  "IT_Thursday",
                        "Friday":  "IT_Friday",
@@ -32,5 +32,6 @@
                        "Sunday":  false,
                        "Friday":  false,
                        "Monday":  false
-                   }
+                   },
+    "GenshinPath":  "C:\\Program Files\\HoYoPlay\\games\\Genshin Impact Game"
 }
