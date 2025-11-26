@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Dashboard V8.1 - 修復 System.Object[] 輸出汙染問題
+# AutoTask Dashboard V7.18 - 邏輯與快捷鍵修復版
 # =============================================================================
 
 # --- [隱藏 Console 黑窗] ---
@@ -31,6 +31,7 @@ $BetterGI_UserDir = "C:\Program Files\BetterGI\User\OneDragon"
 $MasterScript = "$ScriptDir\Master.ps1"
 $StopScript = "$ScriptDir\StopAll.ps1"
 $PublishScript = "$ScriptDir\PublishRelease.ps1"
+$HashFile = "$ConfigsDir\ScriptHash.txt"
 
 # --- [全域變數] ---
 $Global:ConfigList = @() 
@@ -39,11 +40,11 @@ $Global:TurbulenceRules = @{}
 $Global:WeeklyNoShut = @{} 
 $Global:TurbulenceNoShut = @{}
 $Global:GenshinPath = "" 
-$Global:InitialHash = ""
 $Global:ResinData = @{} 
+$Global:InitialHash = ""
 $Script:IsDirty = $false
 $Script:IsLoading = $false
-$WindowTitle = "AutoTask 控制台 V8.1"
+$WindowTitle = "AutoTask 控制台 V7.18"
 
 # 字型
 $MainFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10)
@@ -87,35 +88,43 @@ function Load-EnvConfig {
     if ($env -and $env.GenshinPath) { $Global:GenshinPath = $env.GenshinPath }
 }
 
-function Load-WeeklyRules {
-    $wk = Get-JsonConf $WeeklyConf
-    
-    $Global:WeeklyRules = @{ "Monday"="monday"; "Tuesday"="day"; "Wednesday"="day"; "Thursday"="day"; "Friday"="day"; "Saturday"="day"; "Sunday"="day" }
-    $Global:TurbulenceRules = @{ "Monday"="day"; "Tuesday"="day"; "Wednesday"="day"; "Thursday"="day"; "Friday"="day"; "Saturday"="day"; "Sunday"="day" }
-    $Global:WeeklyNoShut = @{ "Monday"=$false; "Tuesday"=$false; "Wednesday"=$false; "Thursday"=$false; "Friday"=$false; "Saturday"=$false; "Sunday"=$false }
-    $Global:TurbulenceNoShut = @{ "Monday"=$false; "Tuesday"=$false; "Wednesday"=$false; "Thursday"=$false; "Friday"=$false; "Saturday"=$false; "Sunday"=$false }
-
-    if ($wk) {
-        foreach ($k in $Global:WeeklyRules.Keys) { if ($wk.$k) { $Global:WeeklyRules[$k] = $wk.$k } }
-        if ($wk.NoShutdown) {
-            foreach ($k in $Global:WeeklyNoShut.Keys) { 
-                if ($wk.NoShutdown.$k -ne $null) { $Global:WeeklyNoShut[$k] = [bool]$wk.NoShutdown.$k } 
-            }
-        }
-        if ($wk.Turbulence) {
-            foreach ($k in $Global:TurbulenceRules.Keys) { if ($wk.Turbulence.$k) { $Global:TurbulenceRules[$k] = $wk.Turbulence.$k } }
-            if ($wk.Turbulence.NoShutdown) {
-                 foreach ($k in $Global:TurbulenceNoShut.Keys) {
-                    if ($wk.Turbulence.NoShutdown.$k -ne $null) { $Global:TurbulenceNoShut[$k] = [bool]$wk.Turbulence.NoShutdown.$k }
-                 }
-            }
-        }
-    }
-}
-
 function Load-ResinConfig {
     $json = Get-JsonConf $ResinConf
     $Global:ResinData = if ($json) { $json } else { @{} }
+}
+
+# [修正] 強制初始化所有規則，防止空值導致邏輯錯誤
+function Load-WeeklyRules {
+    $wk = Get-JsonConf $WeeklyConf
+    $Days = @("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+    
+    # 1. 初始化預設值
+    $Global:WeeklyRules = @{}
+    $Global:TurbulenceRules = @{}
+    $Global:WeeklyNoShut = @{}
+    $Global:TurbulenceNoShut = @{}
+
+    foreach ($d in $Days) {
+        $Global:WeeklyRules[$d] = "day"
+        $Global:TurbulenceRules[$d] = "day"
+        $Global:WeeklyNoShut[$d] = $false
+        $Global:TurbulenceNoShut[$d] = $false
+    }
+
+    # 2. 覆蓋設定值
+    if ($wk) {
+        foreach ($d in $Days) {
+            if ($wk.$d) { $Global:WeeklyRules[$d] = $wk.$d }
+            if ($wk.NoShutdown -and $wk.NoShutdown.$d -ne $null) { $Global:WeeklyNoShut[$d] = [bool]$wk.NoShutdown.$d }
+            
+            if ($wk.Turbulence) {
+                if ($wk.Turbulence.$d) { $Global:TurbulenceRules[$d] = $wk.Turbulence.$d }
+                if ($wk.Turbulence.NoShutdown -and $wk.Turbulence.NoShutdown.$d -ne $null) { 
+                    $Global:TurbulenceNoShut[$d] = [bool]$wk.Turbulence.NoShutdown.$d 
+                }
+            }
+        }
+    }
 }
 
 function Test-GenshinUpdateDay ($CheckDate) {
@@ -130,6 +139,7 @@ function Test-TurbulencePeriod ($CheckDate) {
     $DiffDays = ($CheckDate.Date - $RefDate).Days
     if ($DiffDays -ge 0) {
         $CycleDay = $DiffDays % 42
+        # 版本更新第8天 ~ 第17天 (共10天)
         if ($CycleDay -ge 8 -and $CycleDay -le 17) { return $CycleDay }
     }
     return 0
@@ -138,14 +148,20 @@ function Test-TurbulencePeriod ($CheckDate) {
 function Get-DisplayConfigName ($dateObj) {
     $dStr = $dateObj.ToString("yyyyMMdd")
     $dWeek = $dateObj.DayOfWeek.ToString()
+    
+    # 1. 指定日期 (最高優先)
     if (Test-Path $DateMap) {
         $map = Get-Content $DateMap
         foreach ($line in $map) { if ($line -match "^$dStr=(.+)$") { return "$($matches[1]) (指定)" } }
     }
+    
+    # 2. 紊亂爆發期 (次優先)
+    # [修正] 只要在紊亂期，就強制回傳 Turb 規則，不回退
     if (Test-TurbulencePeriod $dateObj) {
-        $tConf = $Global:TurbulenceRules.$dWeek
-        if ($tConf) { return "$tConf (紊亂期)" }
+        return "$($Global:TurbulenceRules.$dWeek) (紊亂期)"
     }
+
+    # 3. 一般每週配置
     return "$($Global:WeeklyRules.$dWeek) (每週)"
 }
 
@@ -172,8 +188,9 @@ function Get-ShutdownPolicy ($dateObj) {
     if (Test-Path $NoShutdownLog) { if ((Get-Content $NoShutdownLog) -contains $dStr) { return "不關機 (指定)" } }
     if (Test-TurbulencePeriod $dateObj) {
         if ($Global:TurbulenceNoShut.$dWeek) { return "不關機 (紊亂)" }
+    } else {
+        if ($Global:WeeklyNoShut.$dWeek) { return "不關機 (每週)" }
     }
-    if ($Global:WeeklyNoShut.$dWeek) { return "不關機 (每週)" }
     return "自動關機"
 }
 
@@ -193,38 +210,6 @@ function Auto-Detect-GenshinPath {
     $CommonPaths = @("C:\Program Files\Genshin Impact","C:\Program Files\HoYoPlay\games\Genshin Impact Game","D:\Genshin Impact Game","E:\Genshin Impact Game")
     foreach ($cp in $CommonPaths) { if (Test-Path $cp) { $s=Get-ChildItem -Path $cp -Include $GameExes -Recurse -Depth 3 -File -EA SilentlyContinue|Select -First 1; if($s){return $s.DirectoryName} } }
     return $null
-}
-
-# --- [核心修正] 配置選擇器 ---
-function Show-ConfigSelectorGUI {
-    param([string]$CurrentSelection) 
-    $SelForm = New-Object System.Windows.Forms.Form; $SelForm.Text="配置選擇 (拖曳排序)"; $SelForm.Size="700,500"; $SelForm.StartPosition="CenterParent"; $SelForm.Font=$MainFont
-    $lblSrc = New-Object System.Windows.Forms.Label; $lblSrc.Text="可用配置 (可多選)"; $lblSrc.Location="20,10"; $lblSrc.AutoSize=$true
-    $listSrc = New-Object System.Windows.Forms.ListBox; $listSrc.Location="20,30"; $listSrc.Size="250,350"; $listSrc.SelectionMode="MultiExtended"
-    $RealConfigs = $Global:ConfigList | Where-Object { $_ -ne "PAUSE" }; $listSrc.Items.AddRange($RealConfigs)
-    $lblDst = New-Object System.Windows.Forms.Label; $lblDst.Text="執行佇列"; $lblDst.Location="380,10"; $lblDst.AutoSize=$true
-    $listDst = New-Object System.Windows.Forms.ListBox; $listDst.Location="380,30"; $listDst.Size="250,350"; $listDst.SelectionMode="One"; $listDst.AllowDrop=$true 
-    
-    if (-not [string]::IsNullOrWhiteSpace($CurrentSelection) -and $CurrentSelection -ne "PAUSE") { 
-        $parts = $CurrentSelection -split ","; 
-        foreach ($p in $parts) { 
-            if (-not [string]::IsNullOrWhiteSpace($p)) { 
-                $listDst.Items.Add($p) | Out-Null # [核心修正] 抑制 Add() 回傳的索引數字
-            } 
-        } 
-    }
-    
-    $btnAdd = New-Object System.Windows.Forms.Button; $btnAdd.Text="加入 ->"; $btnAdd.Location="280,150"; $btnAdd.Size="90,30"; $btnAdd.Add_Click({ foreach ($item in $listSrc.SelectedItems) { $listDst.Items.Add($item) | Out-Null } })
-    $btnRem = New-Object System.Windows.Forms.Button; $btnRem.Text="<- 移除"; $btnRem.Location="280,200"; $btnRem.Size="90,30"; $btnRem.Add_Click({ if ($listDst.SelectedIndex -ge 0) { $listDst.Items.RemoveAt($listDst.SelectedIndex) } })
-    $btnOk = New-Object System.Windows.Forms.Button; $btnOk.Text="確定"; $btnOk.Location="250,400"; $btnOk.DialogResult="OK"; $btnOk.BackColor="LightGreen"
-    $btnCancel = New-Object System.Windows.Forms.Button; $btnCancel.Text="取消"; $btnCancel.Location="360,400"; $btnCancel.DialogResult="Cancel"
-    
-    $listDst.Add_MouseDown({ param($s,$e); if($listDst.SelectedItem) { $listDst.DoDragDrop($listDst.SelectedItem, [System.Windows.Forms.DragDropEffects]::Move) } })
-    $listDst.Add_DragOver({ param($s,$e); $e.Effect=[System.Windows.Forms.DragDropEffects]::Move })
-    $listDst.Add_DragDrop({ param($s,$e); $idx=$listDst.IndexFromPoint($listDst.PointToClient([System.Drawing.Point]::new($e.X,$e.Y))); if($idx -lt 0){$idx=$listDst.Items.Count-1}; $item=$e.Data.GetData([string]); if($item){$listDst.Items.Remove($item); $listDst.Items.Insert($idx,$item); $listDst.SelectedIndex=$idx} })
-    
-    $SelForm.Controls.AddRange(@($lblSrc, $listSrc, $lblDst, $listDst, $btnAdd, $btnRem, $btnOk, $btnCancel)); $SelForm.AcceptButton = $btnOk; 
-    if ($SelForm.ShowDialog() -eq "OK") { $f=@(); foreach($i in $listDst.Items){$f+=$i}; return ($f -join ",") } else { return $null }
 }
 
 # --- GUI 初始化 ---
@@ -256,8 +241,9 @@ $TabControl = New-Object System.Windows.Forms.TabControl; $TabControl.Dock = "Fi
 $TabStatus = New-Object System.Windows.Forms.TabPage; $TabStatus.Text = "[HOME] 即時狀態"; $TabStatus.Padding = "10"
 $lblInfo = New-Object System.Windows.Forms.Label; $lblInfo.AutoSize=$true; $lblInfo.Font=$TitleFont; $lblInfo.Location="20,20"
 $btnMan = New-Object System.Windows.Forms.Button; $btnMan.Text="[!] 強制啟動"; $btnMan.Location="20,150"; $btnMan.Size="300,50"; $btnMan.BackColor="LightCoral"; $btnMan.Font=$TitleFont
-$btnMan.Add_Click({ if([System.Windows.Forms.MessageBox]::Show("確定強制啟動？","確認","YesNo") -eq "Yes"){ New-Item -Path $ManualFlag -Force|Out-Null; Start-Process powershell -Arg "-File `"$MasterScript`"" } })
+$btnMan.Add_Click({ if([System.Windows.Forms.MessageBox]::Show("確定強制啟動？","確認","YesNo") -eq "Yes"){ New-Item -Path $ManualFlag -Force|Out-Null; Start-Process powershell.exe -ArgumentList "-ExecutionPolicy Bypass -File `"$MasterScript`"" -Verb RunAs } })
 $btnRef = New-Object System.Windows.Forms.Button; $btnRef.Text="重新整理"; $btnRef.Location="20,210"; $btnRef.Width=300
+$btnRef.Font = $MainFont
 $btnRef.Add_Click({ Update-StatusUI })
 $TabStatus.Controls.AddRange(@($lblInfo, $btnMan, $btnRef))
 
@@ -266,8 +252,14 @@ function Update-StatusUI {
     $st = Get-StatusText
     $finalConf = Get-DisplayConfigName $today
     if (Test-Path $PauseLog) { if ((Get-Content $PauseLog) -contains $today.ToString("yyyyMMdd")) { $finalConf = "PAUSED" } }
-    $Note = ""; if (Test-GenshinUpdateDay $today) { $Note = " (⚠️ 版本更新日)" }; $ITDay = Test-TurbulencePeriod $today; if ($ITDay -gt 0) { $Note = " (🔥 紊亂期 Day $ITDay)" }
-    $lblInfo.Text = "今日: $($today.ToString('yyyy/MM/dd')) ($($today.DayOfWeek))$Note`n配置: $finalConf`n狀態: $($st.Text)"; $lblInfo.ForeColor = $st.Color
+    
+    $Note = ""
+    if (Test-GenshinUpdateDay $today) { $Note = " (⚠️ 版本更新日)" }
+    $ITDay = Test-TurbulencePeriod $today
+    if ($ITDay -gt 0) { $Note = " (🔥 紊亂期 Day $ITDay)" }
+
+    $lblInfo.Text = "今日: $($today.ToString('yyyy/MM/dd')) ($($today.DayOfWeek))$Note`n配置: $finalConf`n狀態: $($st.Text)"
+    $lblInfo.ForeColor = $st.Color
 }
 
 # === 分頁 2: 排程網格 ===
@@ -292,24 +284,59 @@ function Save-GridData { $newMap=@(); $newP=@(); $newS=@(); foreach($r in $grid.
 $TabGrid.Controls.Add($grid); $TabGrid.Controls.Add($pTool)
 
 # =============================================================================
-# 分頁 3: 每週配置 GUI
+# 分頁 3: 每週配置 GUI (快捷鍵修復版)
 # =============================================================================
 $TabWeekly = New-Object System.Windows.Forms.TabPage; $TabWeekly.Text = "⚙️ 每週預設設定"
 $pnlW = New-Object System.Windows.Forms.Panel; $pnlW.Dock="Fill"; $pnlW.AutoScroll=$true
 $DaysKey = @("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday")
 $DaysTxt = @("週一","週二","週三","週四","週五","週六","週日")
 $WInputs = @{}; $TInputs = @{}; $WShutChecks = @{}; $TShutChecks = @{}
-function Build-WRow ($parent, $y, $txt, $key, $store, $storeCheck) { $l=New-Object System.Windows.Forms.Label; $l.Text=$txt; $l.Location="30,$y"; $l.AutoSize=$true; $l.Font=$MainFont; $t=New-Object System.Windows.Forms.TextBox; $t.Location="80,$y"; $t.Width=220; $t.ReadOnly=$true; $t.Font=$MainFont; $b=New-Object System.Windows.Forms.Button; $b.Text="選擇"; $b.Location="310,$($y-2)"; $b.Width=60; $b.Font=$MainFont; $b.Tag=$t; $b.Add_Click({ param($s,$e); $n=Show-ConfigSelectorGUI $this.Tag.Text; if($n-ne$null){$this.Tag.Text=$n} }.GetNewClosure()); $parent.Controls.AddRange(@($l,$t,$b)); $store[$key]=$t; if($storeCheck-ne$null){ $chk=New-Object System.Windows.Forms.CheckBox; $chk.Text="不關機"; $chk.Location="380,$y"; $chk.AutoSize=$true; $chk.Font=$MainFont; $parent.Controls.Add($chk); $storeCheck[$key]=$chk; $t.Add_KeyDown({param($s,$e); if($e.Control-and$e.KeyCode-eq"V"){$c=[System.Windows.Forms.Clipboard]::GetText().Trim();if($c){$s.Text=$c;Mark-Dirty}}; if($e.KeyCode-eq"Delete"){$s.Text="";Mark-Dirty}}); $t.Add_DoubleClick({param($s,$e); $n=Show-ConfigSelectorGUI $s.Text; if($n-ne$null){$s.Text=$n; Mark-Dirty}}) } }
+function Build-WRow ($parent, $y, $txt, $key, $store, $storeCheck) {
+    $l=New-Object System.Windows.Forms.Label; $l.Text=$txt; $l.Location="30,$y"; $l.AutoSize=$true; $l.Font=$MainFont
+    $t=New-Object System.Windows.Forms.TextBox; $t.Location="80,$y"; $t.Width=220; $t.ReadOnly=$false; $t.Font=$MainFont # [修正] ReadOnly=$false 允許鍵盤輸入/貼上
+    
+    # [核心修正] 移除手動 KeyDown 事件，改用 TextChanged 偵測變更
+    # 這樣 Windows 原生的 Ctrl+C/V/A/X 就能正常運作
+    $t.Add_TextChanged({ Mark-Dirty })
+    
+    $t.Add_DoubleClick({ param($s,$e); $n=Show-ConfigSelectorGUI $s.Text; if($n-ne$null){$s.Text=$n} }) # 雙擊選單保留
+    
+    $b=New-Object System.Windows.Forms.Button; $b.Text="選擇"; $b.Location="310,$($y-2)"; $b.Width=60; $b.Font=$MainFont; $b.Tag=$t
+    $b.Add_Click({ param($s,$e); $n=Show-ConfigSelectorGUI $this.Tag.Text; if($n-ne$null){$this.Tag.Text=$n} }.GetNewClosure())
+    $parent.Controls.AddRange(@($l,$t,$b)); $store[$key]=$t
+    if($storeCheck-ne$null){ $chk=New-Object System.Windows.Forms.CheckBox; $chk.Text="不關機"; $chk.Location="380,$y"; $chk.AutoSize=$true; $chk.Font=$MainFont; $parent.Controls.Add($chk); $storeCheck[$key]=$chk; $chk.Add_CheckedChanged({ Mark-Dirty }) }
+}
 $lblW1 = New-Object System.Windows.Forms.Label; $lblW1.Text="=== 一般每週排程 ==="; $lblW1.Location="20,20"; $lblW1.AutoSize=$true; $lblW1.Font=$BoldFont; $lblW1.ForeColor="DarkBlue"; $pnlW.Controls.Add($lblW1); $y=50; for($i=0;$i-lt 7;$i++){ Build-WRow $pnlW $y $DaysTxt[$i] $DaysKey[$i] $WInputs $WShutChecks; $y+=40 }
 $y+=10; $lblW2 = New-Object System.Windows.Forms.Label; $lblW2.Text="=== 紊亂爆發期 (幽境危戰) 專用 ==="; $lblW2.Location="20,$y"; $lblW2.AutoSize=$true; $lblW2.Font=$BoldFont; $lblW2.ForeColor="DarkRed"; $lblW3 = New-Object System.Windows.Forms.Label; $lblW3.Text="(版本更新後第8~17天，優先級高於一般排程)"; $lblW3.Location="20,$($y+25)"; $lblW3.AutoSize=$true; $lblW3.Font=$MainFont; $lblW3.ForeColor="Gray"; $pnlW.Controls.AddRange(@($lblW2, $lblW3)); $y+=60; for($i=0;$i-lt 7;$i++){ Build-WRow $pnlW $y $DaysTxt[$i] $DaysKey[$i] $TInputs $TShutChecks; $y+=40 }
 $y+=30; $btnWSave = New-Object System.Windows.Forms.Button; $btnWSave.Text="儲存所有設定"; $btnWSave.Location="120,$y"; $btnWSave.Size="250,50"; $btnWSave.BackColor="LightGreen"; $btnWSave.Font=$BoldFont; $btnWSave.Add_Click({ $conf=Get-JsonConf $WeeklyConf; if(-not $conf.Turbulence){$conf|Add-Member -Name "Turbulence" -Value @{} -MemberType NoteProperty}; if(-not $conf.NoShutdown){$conf|Add-Member -Name "NoShutdown" -Value @{} -MemberType NoteProperty}; if(-not $conf.Turbulence.NoShutdown){$conf.Turbulence|Add-Member -Name "NoShutdown" -Value @{} -MemberType NoteProperty}; foreach($d in $DaysKey){$conf.$d=$WInputs[$d].Text; $conf.Turbulence.$d=$TInputs[$d].Text; $conf.NoShutdown.$d=$WShutChecks[$d].Checked; $conf.Turbulence.NoShutdown.$d=$TShutChecks[$d].Checked}; if($conf.GenshinPath-eq$null){$conf|Add-Member -Name "GenshinPath" -Value $Global:GenshinPath -MemberType NoteProperty -Force}else{$conf.GenshinPath=$Global:GenshinPath}; $conf|ConvertTo-Json -Depth 4|Set-Content $WeeklyConf; Load-WeeklyRules; [System.Windows.Forms.MessageBox]::Show("設定已儲存！"); Load-GridData }); $pnlW.Controls.Add($btnWSave); $TabWeekly.Controls.Add($pnlW)
 function Init-WeeklyTab { $wk=Get-JsonConf $WeeklyConf; if($wk){ foreach($d in $DaysKey){ if($WInputs.ContainsKey($d)){$WInputs[$d].Text=$wk.$d}; if($wk.Turbulence-and $TInputs.ContainsKey($d)){$TInputs[$d].Text=$wk.Turbulence.$d}; if($wk.NoShutdown-and $WShutChecks.ContainsKey($d)){$WShutChecks[$d].Checked=[bool]$wk.NoShutdown.$d}; if($wk.Turbulence.NoShutdown-and $TShutChecks.ContainsKey($d)){$TShutChecks[$d].Checked=[bool]$wk.Turbulence.NoShutdown.$d} } } }
 
-# =============================================================================
-# 分頁 4: 樹脂策略 (Resin Config)
-# =============================================================================
-$TabResin = New-Object System.Windows.Forms.TabPage; $TabResin.Text = "🧪 樹脂策略"
-$pnlResin = New-Object System.Windows.Forms.Panel; $pnlResin.Dock = "Fill"; $pnlResin.Padding = "20"
+# ... (Config Selector, TabResin, TabTools, TabLogs 保持 V7.6 不變) ...
+# (請複製 V7.6 版本的剩餘代碼，確保完整)
+
+# ----------------------------------------------------------------------------------
+# 以下為 Config Selector, TabResin, TabTools, TabLogs 的簡化引用，請務必使用完整版
+# ----------------------------------------------------------------------------------
+function Show-ConfigSelectorGUI {
+    param([string]$CurrentSelection) 
+    $SelForm = New-Object System.Windows.Forms.Form; $SelForm.Text="配置選擇 (拖曳排序)"; $SelForm.Size="700,500"; $SelForm.StartPosition="CenterParent"; $SelForm.Font=$MainFont
+    $lblSrc = New-Object System.Windows.Forms.Label; $lblSrc.Text="可用配置 (可多選)"; $lblSrc.Location="20,10"; $lblSrc.AutoSize=$true
+    $listSrc = New-Object System.Windows.Forms.ListBox; $listSrc.Location="20,30"; $listSrc.Size="250,350"; $listSrc.SelectionMode="MultiExtended"
+    $RealConfigs = $Global:ConfigList | Where-Object { $_ -ne "PAUSE" }; $listSrc.Items.AddRange($RealConfigs)
+    $lblDst = New-Object System.Windows.Forms.Label; $lblDst.Text="執行佇列"; $lblDst.Location="380,10"; $lblDst.AutoSize=$true
+    $listDst = New-Object System.Windows.Forms.ListBox; $listDst.Location="380,30"; $listDst.Size="250,350"; $listDst.SelectionMode="One"; $listDst.AllowDrop=$true 
+    if (-not [string]::IsNullOrWhiteSpace($CurrentSelection) -and $CurrentSelection -ne "PAUSE") { $parts = $CurrentSelection -split ","; foreach ($p in $parts) { if($p){$listDst.Items.Add($p) | Out-Null} } }
+    $btnAdd = New-Object System.Windows.Forms.Button; $btnAdd.Text="加入 ->"; $btnAdd.Location="280,150"; $btnAdd.Size="90,30"; $btnAdd.Add_Click({ foreach ($item in $listSrc.SelectedItems) { $listDst.Items.Add($item) | Out-Null } })
+    $btnRem = New-Object System.Windows.Forms.Button; $btnRem.Text="<- 移除"; $btnRem.Location="280,200"; $btnRem.Size="90,30"; $btnRem.Add_Click({ if ($listDst.SelectedIndex -ge 0) { $listDst.Items.RemoveAt($listDst.SelectedIndex) } })
+    $btnOk = New-Object System.Windows.Forms.Button; $btnOk.Text="確定"; $btnOk.Location="250,400"; $btnOk.DialogResult="OK"; $btnOk.BackColor="LightGreen"
+    $btnCancel = New-Object System.Windows.Forms.Button; $btnCancel.Text="取消"; $btnCancel.Location="360,400"; $btnCancel.DialogResult="Cancel"
+    $listDst.Add_MouseDown({ param($s,$e); if($listDst.SelectedItem) { $listDst.DoDragDrop($listDst.SelectedItem, [System.Windows.Forms.DragDropEffects]::Move) } })
+    $listDst.Add_DragOver({ param($s,$e); $e.Effect=[System.Windows.Forms.DragDropEffects]::Move })
+    $listDst.Add_DragDrop({ param($s,$e); $idx=$listDst.IndexFromPoint($listDst.PointToClient([System.Drawing.Point]::new($e.X,$e.Y))); if($idx -lt 0){$idx=$listDst.Items.Count-1}; $item=$e.Data.GetData([string]); if($item){$listDst.Items.Remove($item); $listDst.Items.Insert($idx,$item); $listDst.SelectedIndex=$idx} })
+    $SelForm.Controls.AddRange(@($lblSrc, $listSrc, $lblDst, $listDst, $btnAdd, $btnRem, $btnOk, $btnCancel)); $SelForm.AcceptButton = $btnOk; if ($SelForm.ShowDialog() -eq "OK") { $f=@(); foreach($i in $listDst.Items){$f+=$i}; return ($f -join ",") } else { return $null }
+}
+
+$TabResin = New-Object System.Windows.Forms.TabPage; $TabResin.Text = "🧪 樹脂策略"; $pnlResin = New-Object System.Windows.Forms.Panel; $pnlResin.Dock = "Fill"; $pnlResin.Padding = "20"
 $lblR1 = New-Object System.Windows.Forms.Label; $lblR1.Text = "選擇一條龍配置組:"; $lblR1.Location = "20,20"; $lblR1.AutoSize = $true; $lblR1.Font = $BoldFont
 $cbRConfig = New-Object System.Windows.Forms.ComboBox; $cbRConfig.Location = "180,18"; $cbRConfig.Width = 250; $cbRConfig.DropDownStyle = "DropDownList"; $cbRConfig.Font = $MainFont
 $grpType = New-Object System.Windows.Forms.GroupBox; $grpType.Text = "任務類型"; $grpType.Location = "20,60"; $grpType.Size = "200,80"
@@ -321,14 +348,10 @@ $rbAll = New-Object System.Windows.Forms.RadioButton; $rbAll.Text = "完全消�
 $rbCount = New-Object System.Windows.Forms.RadioButton; $rbCount.Text = "指定次數 (Count)"; $rbCount.Location = "20,50"; $rbCount.Width = 150
 $grpMode.Controls.AddRange(@($rbAll, $rbCount))
 $grpCounts = New-Object System.Windows.Forms.GroupBox; $grpCounts.Text = "指定次數 (僅在 Count 模式生效)"; $grpCounts.Location = "20,150"; $grpCounts.Size = "420,80"
-$lC1 = New-Object System.Windows.Forms.Label; $lC1.Text = "原粹:"; $lC1.Location = "20,30"; $lC1.AutoSize = $true
-$numOrig = New-Object System.Windows.Forms.NumericUpDown; $numOrig.Location = "60,28"; $numOrig.Width = 50; $numOrig.Minimum = 0
-$lC2 = New-Object System.Windows.Forms.Label; $lC2.Text = "濃縮:"; $lC2.Location = "120,30"; $lC2.AutoSize = $true
-$numCond = New-Object System.Windows.Forms.NumericUpDown; $numCond.Location = "160,28"; $numCond.Width = 50; $numCond.Minimum = 0
-$lC3 = New-Object System.Windows.Forms.Label; $lC3.Text = "須臾:"; $lC3.Location = "220,30"; $lC3.AutoSize = $true
-$numTran = New-Object System.Windows.Forms.NumericUpDown; $numTran.Location = "260,28"; $numTran.Width = 50; $numTran.Minimum = 0
-$lC4 = New-Object System.Windows.Forms.Label; $lC4.Text = "脆弱:"; $lC4.Location = "320,30"; $lC4.AutoSize = $true
-$numFrag = New-Object System.Windows.Forms.NumericUpDown; $numFrag.Location = "360,28"; $numFrag.Width = 50; $numFrag.Minimum = 0
+$lC1 = New-Object System.Windows.Forms.Label; $lC1.Text = "原粹:"; $lC1.Location = "20,30"; $lC1.AutoSize = $true; $numOrig = New-Object System.Windows.Forms.NumericUpDown; $numOrig.Location = "60,28"; $numOrig.Width = 50; $numOrig.Minimum = 0
+$lC2 = New-Object System.Windows.Forms.Label; $lC2.Text = "濃縮:"; $lC2.Location = "120,30"; $lC2.AutoSize = $true; $numCond = New-Object System.Windows.Forms.NumericUpDown; $numCond.Location = "160,28"; $numCond.Width = 50; $numCond.Minimum = 0
+$lC3 = New-Object System.Windows.Forms.Label; $lC3.Text = "須臾:"; $lC3.Location = "220,30"; $lC3.AutoSize = $true; $numTran = New-Object System.Windows.Forms.NumericUpDown; $numTran.Location = "260,28"; $numTran.Width = 50; $numTran.Minimum = 0
+$lC4 = New-Object System.Windows.Forms.Label; $lC4.Text = "脆弱:"; $lC4.Location = "320,30"; $lC4.AutoSize = $true; $numFrag = New-Object System.Windows.Forms.NumericUpDown; $numFrag.Location = "360,28"; $numFrag.Width = 50; $numFrag.Minimum = 0
 $grpCounts.Controls.AddRange(@($lC1, $numOrig, $lC2, $numCond, $lC3, $numTran, $lC4, $numFrag))
 $grpPrio = New-Object System.Windows.Forms.GroupBox; $grpPrio.Text = "消耗優先級 (上移/下移)"; $grpPrio.Location = "20,250"; $grpPrio.Size = "200,200"
 $lstPrio = New-Object System.Windows.Forms.ListBox; $lstPrio.Location = "20,30"; $lstPrio.Size = "120,150"
@@ -345,9 +368,6 @@ $btnRSave.Add_Click({ $sel = $cbRConfig.Text; if (-not $sel) { [System.Windows.F
 $btnRDelete.Add_Click({ $sel = $cbRConfig.Text; if ($Global:ResinData.ContainsKey($sel)) { $Global:ResinData.Remove($sel); $Global:ResinData | ConvertTo-Json -Depth 5 | Set-Content $ResinConf -Encoding UTF8; [System.Windows.Forms.MessageBox]::Show("策略 [$sel] 已刪除！"); $cbRConfig.SelectedIndex = -1 } })
 $pnlResin.Controls.AddRange(@($lblR1, $cbRConfig, $grpType, $grpMode, $grpCounts, $grpPrio, $btnRSave, $btnRDelete)); $TabResin.Controls.Add($pnlResin)
 
-# =============================================================================
-# 分頁 5: 工具與維護
-# =============================================================================
 $TabTools = New-Object System.Windows.Forms.TabPage; $TabTools.Text = "[TOOL] 工具與維護" 
 $flpTools = New-Object System.Windows.Forms.FlowLayoutPanel; $flpTools.Dock="Fill"; $flpTools.FlowDirection="TopDown"; $flpTools.Padding="20"; $flpTools.AutoSize=$true
 function Add-ToolBtn ($text, $color, $action) { $btn = New-Object System.Windows.Forms.Button; $btn.Text=$text; $btn.Width=400; $btn.Height=50; $btn.BackColor=$color; $btn.Font=$BoldFont; $btn.Margin="0,0,0,15"; $btn.Add_Click($action); $flpTools.Controls.Add($btn) }
@@ -362,9 +382,6 @@ Add-ToolBtn "[GIT] 發布至 GitHub" "LightGray" { if([System.Windows.Forms.Mess
 Add-ToolBtn "[RDP] 修復 RDP 最小化" "LightGray" { Start-Process powershell -Arg "-Command `"reg add 'HKLM\Software\Microsoft\Terminal Server Client' /v 'RemoteDesktop_SuppressWhenMinimized' /t REG_DWORD /d 2 /f`"" -Verb RunAs; [System.Windows.Forms.MessageBox]::Show("完成") }
 $TabTools.Controls.Add($flpTools)
 
-# =============================================================================
-# 分頁 6: 日誌檢視
-# =============================================================================
 $TabLogs = New-Object System.Windows.Forms.TabPage; $TabLogs.Text = "[LOG] 日誌檢視" 
 $pnlLogTop = New-Object System.Windows.Forms.Panel; $pnlLogTop.Dock="Top"; $pnlLogTop.Height=40
 $cbLogFiles = New-Object System.Windows.Forms.ComboBox; $cbLogFiles.Width=300; $cbLogFiles.Location="10,10"; $cbLogFiles.DropDownStyle="DropDownList"; $cbLogFiles.Font=$MainFont
