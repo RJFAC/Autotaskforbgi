@@ -1,38 +1,38 @@
 # ============================================================
-# AutoTask Discord 通知模組 (Notify.ps1)
+# AutoTask Discord 通知模組 V2.0 (支援 Embed Fields)
 # ============================================================
 param (
     [string]$Title = "通知",
     [string]$Message = "",
-    [string]$Color = "Green" # 支援 Green, Red, Yellow
+    [string]$Color = "Green", # Green, Red, Yellow, Blue
+    [hashtable]$Fields = @{}  # [新功能] 支援 key=value 的詳細欄位
 )
 
 $ConfigDir = "C:\AutoTask\Configs"
 $UrlFile = "$ConfigDir\Webhook.url"
 
-# 1. 檢查設定檔是否存在
-if (-not (Test-Path $UrlFile)) {
-    Write-Host "錯誤：找不到 Webhook 設定檔 ($UrlFile)" -ForegroundColor Red
-    return
-}
+if (-not (Test-Path $UrlFile)) { return }
+$WebhookUrl = (Get-Content $UrlFile -Raw).Trim()
+if ([string]::IsNullOrWhiteSpace($WebhookUrl)) { return }
 
-$WebhookUrl = Get-Content $UrlFile -Raw
-$WebhookUrl = $WebhookUrl.Trim()
-
-if ([string]::IsNullOrWhiteSpace($WebhookUrl)) {
-    Write-Host "錯誤：Webhook 網址為空" -ForegroundColor Red
-    return
-}
-
-# 2. 設定顏色代碼 (Decimal)
 $ColorCode = switch ($Color) {
-    "Green"  { 5763719 }  # 綠色
-    "Red"    { 15548997 } # 紅色
-    "Yellow" { 16776960 } # 黃色
-    Default  { 3447003 }  # 藍色
+    "Green"  { 5763719 }  # 綠色 (成功)
+    "Red"    { 15548997 } # 紅色 (失敗)
+    "Yellow" { 16776960 } # 黃色 (警告)
+    "Blue"   { 3447003 }  # 藍色 (資訊)
+    Default  { 3447003 }
 }
 
-# 3. 組合 JSON Payload
+# 構建 Embed Fields
+$EmbedFields = @()
+foreach ($key in $Fields.Keys) {
+    $EmbedFields += @{
+        name = $key
+        value = $Fields[$key]
+        inline = $false
+    }
+}
+
 $Payload = @{
     username = "AutoTask Bot"
     embeds = @(
@@ -40,6 +40,7 @@ $Payload = @{
             title = $Title
             description = $Message
             color = $ColorCode
+            fields = $EmbedFields
             footer = @{
                 text = "來自: $env:COMPUTERNAME | 時間: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
             }
@@ -47,14 +48,7 @@ $Payload = @{
     )
 }
 
-# 強制轉換為 UTF-8 字串以避免亂碼
-$JsonPayload = $Payload | ConvertTo-Json -Depth 4
-
-# 4. 發送請求
-try {
-    # [修正] 加入 charset=utf-8
-    Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body $JsonPayload -ContentType 'application/json; charset=utf-8' -ErrorAction Stop
-    Write-Host "通知已發送至 Discord。" -ForegroundColor Green
-} catch {
-    Write-Host "發送通知失敗: $_" -ForegroundColor Red
-}
+# 強制 UTF-8 轉換
+$JsonPayload = $Payload | ConvertTo-Json -Depth 4 -Compress
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body $JsonPayload -ContentType 'application/json; charset=utf-8'
