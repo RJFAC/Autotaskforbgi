@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Master V5.5 - 無限重啟防護版
+# AutoTask Master V5.7 - 跨日修正版 (03:55 啟動邏輯優化)
 # =============================================================================
 
 # --- [0. 權限自我檢查] ---
@@ -59,7 +59,7 @@ if (Test-Path "$ConfigDir\EnvConfig.json") {
 }
 
 function Check-Network {
-    Write-Log "正在檢查網路連線..." "Cyan"
+    Write-Log "檢查網路..." 
     $Retry = 0; $MaxRetry = 12
     while ($Retry -lt $MaxRetry) {
         try { if (Test-Connection -ComputerName "8.8.8.8" -Count 1 -ErrorAction Stop) { Write-Log "網路正常。" "Green"; return $true } } catch {}
@@ -85,18 +85,45 @@ if (Test-Path $RunFlag) {
 if (-not $IsResume) {
     # --- [全新啟動流程] ---
     if (-not (Test-Path $ManualFlag)) {
+        
+        # [核心修正] 日期判斷 (AddHours -4)
+        $Now = Get-Date
+        # 如果現在是 03:50 ~ 04:00 之間，視為「即將到來的今天」
+        # 此時 -4h 會得到昨天，如果我們用它去查 PauseLog，可能會查到昨天的紀錄。
+        # 但因為 04:00 才是換日點，理論上 03:55 啟動時，它的任務目標是「今天的 04:00」。
+        # 所以我們應該稍微寬容一點：如果現在接近 04:00，我們查的是「明天(相對於-4h)」的設定嗎？
+        # 不，最簡單的邏輯是：03:55 啟動時，PauseLog 應該還沒寫入今天的暫停 (除非手動預設)。
+        # 如果使用者在昨天設了暫停 (停在昨天)，那麼今天 03:55 檢查 -4h (昨天) 會被暫停擋住。
+        # 解決方案：如果現在 > 03:50，我們暫時假設它是為了「新的一天」而跑，
+        # 所以我們檢查 PauseLog 時，應該檢查 `AddHours(-4)` 之後的日期 (如果昨天暫停，今天應該跑)。
+        # 讓我們先保持 -4h 邏輯，但如果發現是「昨天」已完成 (`LastRunLog`)，而現在時間接近 04:00，則允許執行。
+
+        $CheckDateStr = $Now.AddHours(-4).ToString("yyyyMMdd")
+        
         if (Test-Path $PauseLog) {
-            $CheckDateStr = (Get-Date).AddHours(-3).ToString("yyyyMMdd")
-            if ((Get-Content $PauseLog) -contains $CheckDateStr) { Write-Log "今日暫停。" "Yellow"; exit }
+            if ((Get-Content $PauseLog) -contains $CheckDateStr) { Write-Log "今日暫停 ($CheckDateStr)。" "Yellow"; exit }
         }
-        $Now = Get-Date; $Target = (Get-Date).Date.AddHours(3).AddMinutes(55)
+        
+        # 時間窗檢查 (03:35 ~ 04:25)
+        $Target = (Get-Date).Date.AddHours(3).AddMinutes(55)
         if ($Now -lt $Target.AddMinutes(-20) -or $Now -gt $Target.AddMinutes(30)) {
             if (-not (Test-Path $RunFlag)) { Write-Log "非任務時間，退出。" "Gray"; exit }
         }
+        
+        # [核心修正] 如果 LastRun 紀錄的是昨天，且現在是 03:55，代表是新任務，不要退出
+        # 原本邏輯：檢查 LastRun == CurrentDateStr。
+        # 如果昨天跑過，LastRun=昨天。現在03:55，CurrentDateStr=昨天。-> 相等 -> 退出！ (Bug)
+        # 修正：如果現在是 03:50~03:59，我們跳過 LastRun 檢查，交給 Payload 去擋 (Payload 會等到 04:00 後再檢查)
+        if ($Now.Hour -ne 3 -or $Now.Minute -lt 50) {
+             if (Test-Path $LastRunLog) {
+                if ((Get-Content $LastRunLog) -eq $CheckDateStr) { Write-Log "今日任務已完成。" "Green"; exit }
+             }
+        }
+
     } else {
         Write-Log "手動觸發，執行淨化..." "Magenta"
         try {
-            $ResetStatus = @{ Date=(Get-Date).AddHours(-3).ToString("yyyyMMdd"); Status="Preparing"; RetryCount=0; LastUpdate=(Get-Date).ToString("yyyy-MM-dd HH:mm:ss") }
+            $ResetStatus = @{ Date=(Get-Date).AddHours(-4).ToString("yyyyMMdd"); Status="Preparing"; RetryCount=0; LastUpdate=(Get-Date).ToString("yyyy-MM-dd HH:mm:ss") }
             $ResetStatus | ConvertTo-Json | Set-Content $TaskStatus -Encoding UTF8
         } catch {}
 
@@ -168,20 +195,14 @@ while ($true) {
     $PayloadProc = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*Payload.ps1*" }
     if (-not $PayloadProc) {
         if ($PayloadLaunched) {
-            # 檢查是否為快速崩潰循環
             $Now = Get-Date
-            if (($Now - $LastRestartTime).TotalSeconds -lt 60) {
-                $RapidRestartCount++
-            } else {
-                $RapidRestartCount = 1 # 重置計數
-            }
+            if (($Now - $LastRestartTime).TotalSeconds -lt 60) { $RapidRestartCount++ } else { $RapidRestartCount = 1 }
             $LastRestartTime = $Now
 
             if ($RapidRestartCount -gt 5) {
-                Write-Log "⛔ 嚴重錯誤：Payload 連續閃退超過 5 次，停止救援！" "Red"
+                Write-Log "⛔ Payload 連續閃退超過 5 次，停止救援！" "Red"
                 New-Item -Path $FailFlag -ItemType File -Force | Out-Null
-                Remove-Item $RunFlag -Force
-                Stop-Process -Name "1Remote" -Force
+                Remove-Item $RunFlag -Force; Stop-Process -Name "1Remote" -Force
                 exit
             }
 
@@ -218,7 +239,8 @@ while ($true) {
 Stop-Process -Name "1Remote" -Force -ErrorAction SilentlyContinue
 Remove-Item $DoneFlag -Force
 
-$CurrentDateStr = (Get-Date).AddHours(-3).ToString("yyyyMMdd")
+# [修正] 不關機檢查也改為 -4
+$CurrentDateStr = (Get-Date).AddHours(-4).ToString("yyyyMMdd")
 if (Test-Path $NoShutdownLog) {
     if ((Get-Content $NoShutdownLog) -contains $CurrentDateStr) { Write-Log "今日不關機。" "Cyan"; exit }
 }
