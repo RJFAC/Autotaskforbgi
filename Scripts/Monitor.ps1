@@ -1,10 +1,24 @@
-﻿# --- [路徑定義] ---
+﻿# =============================================================================
+# AutoTask Monitor V3.3 - 自我更新與雙向監督版
+# =============================================================================
+
+# --- [定義路徑] ---
 $BaseDir    = "C:\AutoTask"
+$ScriptDir  = "$BaseDir\Scripts"
 $FlagDir    = "$BaseDir\Flags"
 $LogDir     = "$BaseDir\Logs"
 $RunFlag    = "$FlagDir\Run.flag"
+$DoneFlag   = "$FlagDir\Done.flag"
+$MasterScript = "$ScriptDir\Master.ps1"
 
+# 嘗試讀取 EnvConfig
 $1RemoteDir = "%USERPROFILE%\Downloads\1Remote-1.2.1-net9-x64"
+if (Test-Path "$BaseDir\Configs\EnvConfig.json") {
+    try {
+        $env = Get-Content "$BaseDir\Configs\EnvConfig.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($env.Path1Remote) { $1RemoteDir = Split-Path $env.Path1Remote -Parent }
+    } catch {}
+}
 $1RemoteExe = "$1RemoteDir\1Remote.exe"
 $1RemoteArgs= "-r Remote"
 
@@ -18,55 +32,93 @@ function Write-Log {
     $LogFile = Join-Path $LogDir $LogFileName
     $FormattedMsg = "[$TimeStamp] $Message"
     Write-Host $FormattedMsg -ForegroundColor $Color
-    Add-Content -Path $LogFile -Value $FormattedMsg -Encoding UTF8
+    try { Add-Content -Path $LogFile -Value $FormattedMsg -Encoding UTF8 -ErrorAction SilentlyContinue } catch {}
 }
 
-Get-ChildItem -Path $LogDir -Filter "*.log" | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) } | Remove-Item -Force -ErrorAction SilentlyContinue
+# 清理舊日誌
+try { Get-ChildItem -Path $LogDir -Filter "*.log" | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) } | Remove-Item -Force -ErrorAction SilentlyContinue } catch {}
 
-Write-Log "Monitor 啟動..." "Cyan"
+Write-Log "Monitor 啟動 (V3.3 - 自我更新)..." "Cyan"
 
+# --- [狀態變數] ---
 $CurrentLogFile = $null
-$StreamReader = $null
+$LastSize = 0
+$MyPID = $PID
+
+# [新] 記錄啟動時的檔案時間，用於偵測更新
+$SelfPath = $PSCommandPath
+$InitialWriteTime = (Get-Item $SelfPath).LastWriteTime
 
 while ($true) {
+    # 1. 檢查自身存活條件
     if (-not (Test-Path $RunFlag)) {
-        Write-Log "Run.flag 已消失，Monitor 停止。" "Gray"
+        Write-Log "Run.flag 已消失，Monitor 正常停止。" "Gray"
         break
     }
 
-    if (-not (Get-Process "1Remote" -ErrorAction SilentlyContinue)) {
-        Write-Log "⚠️ 警報：偵測到 1Remote 進程消失 (崩潰)！立即執行重啟..." "Red"
-        Start-Process -FilePath $1RemoteExe -WorkingDirectory $1RemoteDir
-        Start-Sleep 5
-        Start-Process -FilePath $1RemoteExe -ArgumentList $1RemoteArgs -WorkingDirectory $1RemoteDir
-        Write-Log "✅ 1Remote 已發送重啟指令。" "Green"
-        if ($StreamReader) { $StreamReader.Close(); $StreamReader = $null }
-        Start-Sleep 10
-        continue
-    }
+    # 2. [新功能] 檢查自我更新 (若檔案被修改，則自我終止，讓 Master 重啟我)
+    try {
+        if ((Get-Item $SelfPath).LastWriteTime -ne $InitialWriteTime) {
+            Write-Log "♻️ 偵測到 Monitor 腳本更新，正在重啟以應用變更..." "Magenta"
+            exit # 退出後，Master 的監督機制會自動重啟新的 Monitor
+        }
+    } catch {}
 
-    $LatestLog = Get-ChildItem "$1RemoteDir\.logs\1Remote.log_*.md" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    # 3. 監督 Master 是否活著
+    $MasterProc = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*Master.ps1*" }
     
-    if ($LatestLog -and ($null -eq $CurrentLogFile -or $LatestLog.FullName -ne $CurrentLogFile.FullName)) {
-        Write-Log "鎖定 1Remote 日誌: $($LatestLog.Name)" "Cyan"
-        if ($StreamReader) { $StreamReader.Close() }
-        $CurrentLogFile = $LatestLog
-        $FileStream = [System.IO.File]::Open($CurrentLogFile.FullName, 'Open', 'Read', 'ReadWrite')
-        $StreamReader = New-Object System.IO.StreamReader($FileStream)
-        $StreamReader.BaseStream.Seek(0, [System.IO.SeekOrigin]::End)
-    }
-
-    if ($StreamReader) {
-        while (-not $StreamReader.EndOfStream) {
-            $line = $StreamReader.ReadLine()
-            if ($line -match "error code") {
-                Write-Log "⚠️ 偵測到斷線日誌: $line" "Yellow"
-                Write-Log "執行重連..." 
-                Start-Process -FilePath $1RemoteExe -ArgumentList $1RemoteArgs -WorkingDirectory $1RemoteDir
-                Start-Sleep 5
-            }
+    if (-not $MasterProc) {
+        if (-not (Test-Path $DoneFlag)) {
+            Write-Log "⚠️ 警報：Master 意外消失且任務未完成！正在重啟 Master..." "Red"
+            Start-Process powershell.exe -ArgumentList "-ExecutionPolicy Bypass -File `"$MasterScript`"" -Verb RunAs
+            Start-Sleep 5 
+        } else {
+            Write-Log "Master 已結束且任務完成，Monitor 跟隨退出。" "Green"
+            break
         }
     }
-    Start-Sleep 2
+
+    # 4. 鎖定或更新日誌檔
+    $DateStr = Get-Date -Format "yyyyMMdd"
+    $LatestLog = Get-ChildItem "$1RemoteDir\.logs\1Remote.log_$DateStr*.md" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    
+    if ($LatestLog) {
+        if ($null -eq $CurrentLogFile -or $LatestLog.FullName -ne $CurrentLogFile.FullName) {
+            Write-Log "鎖定新日誌: $($LatestLog.Name)" "Cyan"
+            $CurrentLogFile = $LatestLog
+            $LastSize = $CurrentLogFile.Length 
+        }
+
+        # 5. 讀取新增內容
+        try {
+            $CurrentLogFile.Refresh()
+            $CurrentSize = $CurrentLogFile.Length
+            
+            if ($CurrentSize -gt $LastSize) {
+                $Stream = [System.IO.File]::Open($CurrentLogFile.FullName, 'Open', 'Read', 'ReadWrite')
+                $Reader = New-Object System.IO.StreamReader($Stream)
+                $null = $Reader.BaseStream.Seek($LastSize, [System.IO.SeekOrigin]::Begin)
+                $NewContent = $Reader.ReadToEnd()
+                $Reader.Close(); $Stream.Close()
+                
+                $LastSize = $CurrentSize
+                
+                if ($NewContent -match "exit with error code") {
+                    Write-Log "⚠️ 偵測到 RDP 斷線訊號！" "Red"
+                    Write-Log "正在重啟 1Remote..." "Yellow"
+                    Stop-Process -Name "1Remote" -Force -ErrorAction SilentlyContinue
+                    Start-Sleep 2
+                    Start-Process -FilePath $1RemoteExe -WorkingDirectory $1RemoteDir
+                    Start-Sleep 5
+                    Start-Process -FilePath $1RemoteExe -ArgumentList $1RemoteArgs -WorkingDirectory $1RemoteDir
+                    Write-Log "重連指令已發送。" "Green"
+                    Start-Sleep 10
+                }
+            }
+        } catch {
+            Write-Log "讀取日誌錯誤: $_" "Red"
+        }
+    }
+
+    Start-Sleep -Seconds 2
 }
-if ($StreamReader) { $StreamReader.Close() }
