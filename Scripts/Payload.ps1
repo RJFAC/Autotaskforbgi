@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Payload V5.12 - 變數重算版
+# AutoTask Payload V5.13 - 變數修復與防崩潰版
 # =============================================================================
 $ErrorActionPreference = "Stop"
 trap {
@@ -8,22 +8,97 @@ trap {
     exit 1
 }
 
-# ... (前段身分驗證、路徑變數、輔助函數保持 V5.11 不變) ...
-# 為了確保正確性，請複製 V5.11 的前段代碼，直到 "主流程" 之前
-# ----------------------------------------------------------
+# --- [0. 身分驗證] ---
 $TargetUser = "Remote" 
 $CurrentUserName = [System.Environment]::UserName
 $BaseDir    = "C:\AutoTask"
 $LogDir     = "$BaseDir\Logs"
 if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -ItemType Directory | Out-Null }
-function Write-PreLog { param($Msg, $Color="Red"); $Time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"; $LogF = Join-Path $LogDir "Payload_$(Get-Date -Format 'yyyyMMdd').log"; $Txt = "[$Time] $Msg"; Write-Host $Txt -ForegroundColor $Color; try { Add-Content -Path $LogF -Value $Txt -Encoding UTF8 -ErrorAction SilentlyContinue } catch {} }
-if ($CurrentUserName -ne $TargetUser) { Write-PreLog "⛔ 錯誤：身分不符！" "Red"; Start-Sleep 3; exit }
-$ScriptDir  = "$BaseDir\Scripts"; $ConfigDir  = "$BaseDir\Configs"; $FlagDir    = "$BaseDir\Flags"; $BettergiDir    = "C:\Program Files\BetterGI"; $BettergiExe    = "$BettergiDir\BetterGI.exe"; $BettergiUserConf = "$BettergiDir\User\config.json"; $LogDirBG       = "$BettergiDir\log"; $ScreenshotDir  = "$BettergiDir\Screenshots"; $1RemoteLogDir  = $null; $TaskStatusFile = "$ConfigDir\TaskStatus.json"; $DoneFlag       = "$FlagDir\Done.flag"; $FailFlag       = "$FlagDir\Fail.flag"; $ForceRunFlag   = "$FlagDir\ForceRun.flag"; $DateMap        = "$ConfigDir\DateConfig.map"; $WeeklyConf     = "$ConfigDir\WeeklyConfig.json"; $EnvConf        = "$ConfigDir\EnvConfig.json"; $ResinConf      = "$ConfigDir\ResinConfig.json"; $PauseLog       = "$ConfigDir\PauseDates.log"; $LastRunLog     = "$ConfigDir\LastRun.log"; $BackupRootDir  = "$BaseDir\LogBackups"; $NotifyScript   = "$ScriptDir\Notify.ps1"; $MaxRetries = 3; $SuccessKeyword = "一条龙.*任务结束"; $SelfPath = $PSCommandPath; $InitialWriteTime = (Get-Item $SelfPath).LastWriteTime
-function Write-Log { param([string]$Message, [string]$Color="White"); $TimeStamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"; $LogFileName = "Payload_$(Get-Date -Format 'yyyyMMdd').log"; $LogFile = Join-Path $LogDir $LogFileName; $FormattedMsg = "[$TimeStamp] $Message"; Write-Host $FormattedMsg -ForegroundColor $Color; try { Add-Content -Path $LogFile -Value $FormattedMsg -Encoding UTF8 -ErrorAction SilentlyContinue } catch {} }
-Write-Log "Payload 啟動 (V5.12)..." "Cyan"
-try { $CurrentPID = $PID; $TargetScript = "Payload.ps1"; $OldInstances = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*$TargetScript*" -and $_.ProcessId -ne $CurrentPID }; if ($OldInstances) { foreach ($proc in $OldInstances) { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue } } } catch {}
+
+function Write-PreLog {
+    param($Msg, $Color="Red")
+    $Time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $LogF = Join-Path $LogDir "Payload_$(Get-Date -Format 'yyyyMMdd').log"
+    $Txt = "[$Time] $Msg"
+    Write-Host $Txt -ForegroundColor $Color
+    try { Add-Content -Path $LogF -Value $Txt -Encoding UTF8 -ErrorAction SilentlyContinue } catch {}
+}
+
+if ($CurrentUserName -ne $TargetUser) {
+    Write-PreLog "⛔ 錯誤：身分不符！Payload 被 [$CurrentUserName] 誤觸，已攔截。" "Red"
+    Start-Sleep 3; exit 
+}
+
+# --- [變數定義] ---
+$ScriptDir  = "$BaseDir\Scripts"
+$ConfigDir  = "$BaseDir\Configs"
+$FlagDir    = "$BaseDir\Flags"
+$BettergiDir    = "C:\Program Files\BetterGI"
+$BettergiExe    = "$BettergiDir\BetterGI.exe"
+$BettergiUserConf = "$BettergiDir\User\config.json"
+$LogDirBG       = "$BettergiDir\log"
+$ScreenshotDir  = "$BettergiDir\Screenshots" 
+$1RemoteLogDir  = $null 
+
+$TaskStatusFile = "$ConfigDir\TaskStatus.json"
+$DoneFlag       = "$FlagDir\Done.flag"
+$FailFlag       = "$FlagDir\Fail.flag"
+$ForceRunFlag   = "$FlagDir\ForceRun.flag" 
+$DateMap        = "$ConfigDir\DateConfig.map"
+$WeeklyConf     = "$ConfigDir\WeeklyConfig.json"
+$EnvConf        = "$ConfigDir\EnvConfig.json"
+$ResinConf      = "$ConfigDir\ResinConfig.json"
+$PauseLog       = "$ConfigDir\PauseDates.log"
+$LastRunLog     = "$ConfigDir\LastRun.log"
+$BackupRootDir  = "$BaseDir\LogBackups"
+$NotifyScript   = "$ScriptDir\Notify.ps1"
+$MaxRetries = 3
+$SuccessKeyword = "一条龙.*任务结束"
+$SelfPath = $PSCommandPath
+$InitialWriteTime = (Get-Item $SelfPath).LastWriteTime
+
+# [重要] 定義開始時間變數
+$StartTime = Get-Date
+
+function Write-Log {
+    param([string]$Message, [string]$Color="White")
+    $TimeStamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $LogFileName = "Payload_$(Get-Date -Format 'yyyyMMdd').log"
+    $LogFile = Join-Path $LogDir $LogFileName
+    $FormattedMsg = "[$TimeStamp] $Message"
+    Write-Host $FormattedMsg -ForegroundColor $Color
+    try { Add-Content -Path $LogFile -Value $FormattedMsg -Encoding UTF8 -ErrorAction SilentlyContinue } catch {}
+}
+
+# --- [1. 啟動前安全檢查] ---
+Write-Log "Payload 啟動 (V5.13)..." "Cyan"
+
+try {
+    $CurrentPID = $PID
+    $TargetScript = "Payload.ps1"
+    $OldInstances = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | 
+        Where-Object { $_.CommandLine -like "*$TargetScript*" -and $_.ProcessId -ne $CurrentPID }
+    if ($OldInstances) {
+        foreach ($proc in $OldInstances) { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue }
+    }
+} catch {}
+
 $BakFile = "$BettergiUserConf.bak"
-if (Test-Path $EnvConf) { try { $EnvJson = Get-Content $EnvConf -Raw -Encoding UTF8 -ErrorAction SilentlyContinue | ConvertFrom-Json; if ($EnvJson.GenshinPath) { $GenshinPath = $EnvJson.GenshinPath }; if ($EnvJson.Path1Remote) { $1RemoteDir = Split-Path $EnvJson.Path1Remote -Parent; $1RemoteLogDir = "$1RemoteDir\.logs" } } catch {} }
+
+if (Test-Path $EnvConf) {
+    try {
+        $EnvJson = Get-Content $EnvConf -Raw -Encoding UTF8 -ErrorAction SilentlyContinue | ConvertFrom-Json
+        if ($EnvJson.GenshinPath) { $GenshinPath = $EnvJson.GenshinPath }
+        if ($EnvJson.Path1Remote) { 
+            $1RemoteDir = Split-Path $EnvJson.Path1Remote -Parent
+            $1RemoteLogDir = "$1RemoteDir\.logs"
+        }
+    } catch {}
+}
+
+# --------------------------------------------------
+# 輔助函數 (與 V5.11/V5.9 相同)
+# --------------------------------------------------
 function Get-Error-Diagnosis { param($e,$p); $r="未知";$f="All Log"; switch($e){"LogLockFail"{$r="BGI啟動超時";$f="Payload.log"} "ProcessCrash"{$r="BGI閃退";$f="bg.log,pl.log"} "HeartbeatTimeout"{$r="卡死";$f="bg.log"} "NetworkError"{$r="斷網";$f="pl.log"}}; return @{Reason=$r;Files=$f} }
 function Send-Notify-With-Diagnosis { param($t,$m,$c,$d); $f=@{"Err"=$d.Reason;"File"=$d.Files;"Bak"=$m}; if(Test-Path $NotifyScript){try{& $NotifyScript -Title $t -Message "Error" -Color $c -Fields $f}catch{}} }
 function Set-BetterGIResinConfig { param($c); if(-not(Test-Path $ResinConf)){return $false}; try{ $r=Get-Content $ResinConf -Raw|ConvertFrom-Json; if(-not $r.$c){return $false}; Write-Log "Resin: $c" "Cyan"; if(-not(Test-Path $BakFile)){Copy-Item $BettergiUserConf $BakFile -Force}; $b=Get-Content $BettergiUserConf -Raw|ConvertFrom-Json; $s=if($r.$c.TaskType-eq"Stygian"){$b.autoStygianOnslaughtConfig}else{$b.autoDomainConfig}; if($r.$c.Priority){$s.resinPriorityList=$r.$c.Priority}; if($r.$c.ResinMode-eq"Count"){$s.specifyResinUse=$true;$s.originalResinUseCount=$r.$c.Counts.Original}else{$s.specifyResinUse=$false}; $b|ConvertTo-Json -Depth 20|Set-Content $BettergiUserConf -Enc UTF8; return $true }catch{return $false} }
@@ -37,7 +112,7 @@ function Get-TargetConfig { $t=(Get-Date).AddHours(-4);$ds=$t.ToString("yyyyMMdd
 function Test-GenshinUpdateDay ($d) { $r=[datetime]"2024-08-28";$diff=($d.Date-$r).Days;if($diff-ge 0 -and $diff%42-eq 0){return $true}return $false }
 function Check-GenshinPreDownload { if(-not $Global:GenshinPath){return};$r=[datetime]"2024-08-28";$d=((Get-Date).Date-$r).Days%42;if($d-ne 40-and $d-ne 41){return};Write-Log "Check PreDL" "Gray" }
 function Cleanup-Screenshots { if(Test-Path $ScreenshotDir){try{Get-ChildItem $ScreenshotDir -Recurse|Where{$_.LastWriteTime-lt(Get-Date).AddDays(-30)}|Remove-Item -Force}catch{}} }
-# ----------------------------------------------------------
+# --------------------------------------------------
 
 $CurrentDateObj = (Get-Date).AddHours(-4)
 $CurrentDateStr = $CurrentDateObj.ToString("yyyyMMdd")
@@ -64,15 +139,12 @@ if ($CurrentTime -ge $ForceEndStart -and $CurrentTime -lt $TodayLimit) {
 }
 
 # Wait 04:00
-# [修正] 只有 03:00~03:59 需要等待
 if ($CurrentTime.Hour -eq 3) { 
     while ((Get-Date) -lt $TargetTime) { 
         $Span = $TargetTime - (Get-Date)
         if ($Span.Seconds % 60 -eq 0) { Write-Log "等待 04:00... 剩餘 $($Span.Minutes) 分" "Gray" }
         Start-Sleep 1 
     } 
-    
-    # [核心修正] 等待結束後，必須重新計算「今天」的日期！
     $CurrentDateObj = (Get-Date).AddHours(-4)
     $CurrentDateStr = $CurrentDateObj.ToString("yyyyMMdd")
     Write-Log "已過 04:00，重新計算日期: $CurrentDateStr" "Cyan"
@@ -178,8 +250,15 @@ while ($RetryCount -le $MaxRetries) {
     }
 
     if ($AllConfigSuccess) {
-        $Duration = New-TimeSpan -Start $StartTime -End (Get-Date)
-        Write-Log ">>> 全部完成。耗時: {0:hh}時{0:mm}分" -f $Duration "Green"
+        # [變數修復] 加入 try-catch 防止計算耗時崩潰
+        try {
+            if ($StartTime) {
+                $Duration = New-TimeSpan -Start $StartTime -End (Get-Date)
+                $DurStr = "{0:hh}時{0:mm}分" -f $Duration
+            } else { $DurStr = "未知" }
+        } catch { $DurStr = "未知(CalcErr)" }
+        
+        Write-Log ">>> 全部完成。耗時: $DurStr" "Green"
         Send-Notify "Success" "Config: $ConfigName" "Green"
         Update-Status "Success" $RetryCount
         Set-Content $LastRunLog -Value $CurrentDateStr
