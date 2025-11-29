@@ -93,6 +93,20 @@ try {
     }
     Set-Content -Path $HashFile -Value $CurrentHash -Force
     Write-Host "雜湊已儲存至: $HashFile" -ForegroundColor Gray
+# --- [新增] 自動列出所有 .ps1 的 Raw 網址 ---
+    Write-Host "`n[INFO] 正在生成全腳本 Raw 網址..." -ForegroundColor Cyan
+    $Remote = git remote get-url origin
+    if ($Remote -match "github\.com[:/](?<U>.+?)/(?<R>.+?)(\.git)?$") {
+        $User = $Matches.U; $Repo = $Matches.R
+        $Sha = git rev-parse HEAD
+        Write-Host "--- GitHub Raw Links (版本: $($Sha.Substring(0,7))) ---" -ForegroundColor Yellow
+        Get-ChildItem -Path . -Filter "*.ps1" -Recurse | ForEach-Object {
+            $RelPath = $_.FullName.Substring($PWD.Path.Length + 1).Replace("\", "/")
+            $Url = "https://raw.githubusercontent.com/$User/$Repo/$Sha/$RelPath"
+            Write-Host "$RelPath`n$Url"
+        }
+        Write-Host "----------------------------------------------------" -ForegroundColor Yellow
+    }
 # --- [新增功能] 生成並顯示 Raw 網址 ---
     Write-Host "`n[INFO] 正在生成 Raw 網址..." -ForegroundColor Cyan
     try {
