@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Payload V5.13 - 變數修復與防崩潰版
+# AutoTask Payload V5.16 - 變數修復版 (解決 03:55 不等待問題)
 # =============================================================================
 $ErrorActionPreference = "Stop"
 trap {
@@ -56,8 +56,6 @@ $MaxRetries = 3
 $SuccessKeyword = "一条龙.*任务结束"
 $SelfPath = $PSCommandPath
 $InitialWriteTime = (Get-Item $SelfPath).LastWriteTime
-
-# [重要] 定義開始時間變數
 $StartTime = Get-Date
 
 function Write-Log {
@@ -71,7 +69,7 @@ function Write-Log {
 }
 
 # --- [1. 啟動前安全檢查] ---
-Write-Log "Payload 啟動 (V5.13)..." "Cyan"
+Write-Log "Payload 啟動 (V5.16)..." "Cyan"
 
 try {
     $CurrentPID = $PID
@@ -96,9 +94,7 @@ if (Test-Path $EnvConf) {
     } catch {}
 }
 
-# --------------------------------------------------
-# 輔助函數 (與 V5.11/V5.9 相同)
-# --------------------------------------------------
+# --- [輔助函數] ---
 function Get-Error-Diagnosis { param($e,$p); $r="未知";$f="All Log"; switch($e){"LogLockFail"{$r="BGI啟動超時";$f="Payload.log"} "ProcessCrash"{$r="BGI閃退";$f="bg.log,pl.log"} "HeartbeatTimeout"{$r="卡死";$f="bg.log"} "NetworkError"{$r="斷網";$f="pl.log"}}; return @{Reason=$r;Files=$f} }
 function Send-Notify-With-Diagnosis { param($t,$m,$c,$d); $f=@{"Err"=$d.Reason;"File"=$d.Files;"Bak"=$m}; if(Test-Path $NotifyScript){try{& $NotifyScript -Title $t -Message "Error" -Color $c -Fields $f}catch{}} }
 function Set-BetterGIResinConfig { param($c); if(-not(Test-Path $ResinConf)){return $false}; try{ $r=Get-Content $ResinConf -Raw|ConvertFrom-Json; if(-not $r.$c){return $false}; Write-Log "Resin: $c" "Cyan"; if(-not(Test-Path $BakFile)){Copy-Item $BettergiUserConf $BakFile -Force}; $b=Get-Content $BettergiUserConf -Raw|ConvertFrom-Json; $s=if($r.$c.TaskType-eq"Stygian"){$b.autoStygianOnslaughtConfig}else{$b.autoDomainConfig}; if($r.$c.Priority){$s.resinPriorityList=$r.$c.Priority}; if($r.$c.ResinMode-eq"Count"){$s.specifyResinUse=$true;$s.originalResinUseCount=$r.$c.Counts.Original}else{$s.specifyResinUse=$false}; $b|ConvertTo-Json -Depth 20|Set-Content $BettergiUserConf -Enc UTF8; return $true }catch{return $false} }
@@ -112,7 +108,6 @@ function Get-TargetConfig { $t=(Get-Date).AddHours(-4);$ds=$t.ToString("yyyyMMdd
 function Test-GenshinUpdateDay ($d) { $r=[datetime]"2024-08-28";$diff=($d.Date-$r).Days;if($diff-ge 0 -and $diff%42-eq 0){return $true}return $false }
 function Check-GenshinPreDownload { if(-not $Global:GenshinPath){return};$r=[datetime]"2024-08-28";$d=((Get-Date).Date-$r).Days%42;if($d-ne 40-and $d-ne 41){return};Write-Log "Check PreDL" "Gray" }
 function Cleanup-Screenshots { if(Test-Path $ScreenshotDir){try{Get-ChildItem $ScreenshotDir -Recurse|Where{$_.LastWriteTime-lt(Get-Date).AddDays(-30)}|Remove-Item -Force}catch{}} }
-# --------------------------------------------------
 
 $CurrentDateObj = (Get-Date).AddHours(-4)
 $CurrentDateStr = $CurrentDateObj.ToString("yyyyMMdd")
@@ -139,10 +134,16 @@ if ($CurrentTime -ge $ForceEndStart -and $CurrentTime -lt $TodayLimit) {
 }
 
 # Wait 04:00
+# [修正] 再次確認 TargetTime 正確定義
+$TargetTime = $TodayLimit 
+
 if ($CurrentTime.Hour -eq 3) { 
     while ((Get-Date) -lt $TargetTime) { 
         $Span = $TargetTime - (Get-Date)
-        if ($Span.Seconds % 60 -eq 0) { Write-Log "等待 04:00... 剩餘 $($Span.Minutes) 分" "Gray" }
+        if ($Span.Seconds % 60 -eq 0) { 
+            Write-Log "等待 04:00... 剩餘 $($Span.Minutes) 分" "Gray" 
+            Update-Status "Waiting(04:00)" 0
+        }
         Start-Sleep 1 
     } 
     $CurrentDateObj = (Get-Date).AddHours(-4)
@@ -157,8 +158,18 @@ $IsForceRun = $false
 if (Test-Path $ForceRunFlag) { Write-Log "偵測到 ForceRun" "Magenta"; $IsForceRun = $true; Remove-Item $ForceRunFlag -Force }
 
 if (-not $IsForceRun) {
-    if ((Test-Path $PauseLog) -and ((Get-Content $PauseLog) -contains $CurrentDateStr)) { Write-Log "今日暫停。"; Update-Status "Paused" 0; Stop-Process -Name "BetterGI" -Force; Stop-Process -Name "GenshinImpact" -Force; New-Item $DoneFlag -Force; logoff; exit }
-    if ((Test-Path $LastRunLog) -and ((Get-Content $LastRunLog) -eq $CurrentDateStr)) { Update-Status "Success" 0; New-Item $DoneFlag -Force; logoff; exit }
+    if ((Test-Path $PauseLog) -and ((Get-Content $PauseLog) -contains $CurrentDateStr)) { 
+        Write-Log "今日設定為暫停。腳本結束 (保留連線)。" "Yellow"
+        Update-Status "Paused" 0
+        New-Item $DoneFlag -Force | Out-Null
+        exit 
+    }
+    if ((Test-Path $LastRunLog) -and ((Get-Content $LastRunLog) -eq $CurrentDateStr)) { 
+        Write-Log "今日任務已完成。腳本結束 (保留連線)。" "Green"
+        Update-Status "Success" 0
+        New-Item $DoneFlag -Force | Out-Null
+        exit 
+    }
 }
 
 $IsUpdateDay = Test-GenshinUpdateDay $CurrentDateObj
@@ -167,7 +178,11 @@ if ($IsUpdateDay -and -not $IsForceRun) {
     if ((Get-Date) -lt $UpdateResumeTime) {
         Write-Log "⚠️ 版本更新日！待機至 11:30" "Magenta"; Send-Notify -Title "版本更新" -Msg "系統待機" -Color "Yellow"
         Check-GenshinPreDownload
-        while ((Get-Date) -lt $UpdateResumeTime) { Start-Sleep 60 }; Write-Log "維護結束。" "Green"
+        while ((Get-Date) -lt $UpdateResumeTime) { 
+            Start-Sleep 60 
+            Update-Status "Maintenance" 0
+        }
+        Write-Log "維護結束。" "Green"
     }
 }
 
@@ -199,8 +214,11 @@ while ($RetryCount -le $MaxRetries) {
         $BgProc = Get-Process "BetterGI" -ErrorAction SilentlyContinue
         if ($BgProc) {
             $RecentLog = Get-ChildItem $LogDirBG -Filter "better-genshin-impact*.log" | Sort LastWriteTime -Desc | Select -First 1
-            if ($RecentLog -and $RecentLog.LastWriteTime -gt (Get-Date).AddMinutes(-5)) { Write-Log "熱修復: 接手監控..." "Yellow"; $SkipStart = $true }
-            else { Write-Log "BetterGI 殭屍程序，清理。" "Red"; Stop-Process -Name "BetterGI" -Force -ErrorAction SilentlyContinue }
+            if ($RecentLog -and $RecentLog.LastWriteTime -gt (Get-Date).AddMinutes(-5)) {
+                Write-Log "熱修復: 接手監控..." "Yellow"; $SkipStart = $true
+            } else {
+                Write-Log "BetterGI 殭屍程序，清理。" "Red"; Stop-Process -Name "BetterGI" -Force -ErrorAction SilentlyContinue
+            }
         }
 
         if (-not $SkipStart) {
@@ -250,14 +268,13 @@ while ($RetryCount -le $MaxRetries) {
     }
 
     if ($AllConfigSuccess) {
-        # [變數修復] 加入 try-catch 防止計算耗時崩潰
         try {
             if ($StartTime) {
                 $Duration = New-TimeSpan -Start $StartTime -End (Get-Date)
                 $DurStr = "{0:hh}時{0:mm}分" -f $Duration
             } else { $DurStr = "未知" }
         } catch { $DurStr = "未知(CalcErr)" }
-        
+
         Write-Log ">>> 全部完成。耗時: $DurStr" "Green"
         Send-Notify "Success" "Config: $ConfigName" "Green"
         Update-Status "Success" $RetryCount
