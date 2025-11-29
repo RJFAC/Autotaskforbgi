@@ -6,3 +6,4 @@ Configs/*.map
 Configs/*.json
 Configs/Webhook.url
 Configs/ScriptHash.txt
+Configs/GitHub_Raw_Links.txt

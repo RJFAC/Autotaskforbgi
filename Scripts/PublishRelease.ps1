@@ -1,10 +1,11 @@
 # =============================================================================
-# AutoTask 專案淨化與發布工具 V2.3 (新增版本雜湊紀錄)
+# AutoTask 專案淨化與發布工具 V2.4 (新增 URL 生成與存檔)
 # =============================================================================
 $SourceDir = "C:\AutoTask"
 $DestDir   = "C:\AutoTask_Public"
 $ConfigsDir = "$SourceDir\Configs"
 $HashFile   = "$ConfigsDir\ScriptHash.txt"
+$UrlLogFile = "$ConfigsDir\GitHub_Raw_Links.txt" # [新增] 網址存檔路徑
 $MyUser    = [System.Environment]::UserName
 $DateStr   = Get-Date -Format "yyyy-MM-dd HH:mm"
 
@@ -57,6 +58,7 @@ Configs/*.map
 Configs/*.json
 Configs/Webhook.url
 Configs/ScriptHash.txt
+Configs/GitHub_Raw_Links.txt
 "@
 Set-Content "$DestDir\.gitignore" -Value $GitIgnore -Encoding UTF8
 
@@ -85,58 +87,43 @@ try {
     }
     Write-Host "✅ 發布成功！" -ForegroundColor Green
     
-    # [關鍵新增] 更新本地的版本雜湊紀錄
+    # --- [新增] 自動生成並存檔 Raw 網址 ---
+    Write-Host "`n[INFO] 正在生成全腳本 Raw 網址..." -ForegroundColor Cyan
+    $UrlList = @()
+    $Remote = git remote get-url origin
+    if ($Remote -match "github\.com[:/](?<U>.+?)/(?<R>.+?)(\.git)?$") {
+        $User = $Matches.U; $Repo = $Matches.R
+        $Sha = git rev-parse HEAD
+        
+        $Header = "=== GitHub Raw Links (版本: $($Sha.Substring(0,7)) | 時間: $DateStr) ==="
+        $UrlList += $Header
+        Write-Host $Header -ForegroundColor Yellow
+
+        # 掃描目前的目錄 ($DestDir) 獲取所有 PS1
+        Get-ChildItem -Path . -Filter "*.ps1" -Recurse | Sort-Object Name | ForEach-Object {
+            $RelPath = $_.FullName.Substring($PWD.Path.Length + 1).Replace("\", "/")
+            $Url = "https://raw.githubusercontent.com/$User/$Repo/$Sha/$RelPath"
+            
+            $Entry = "$RelPath`n$Url"
+            $UrlList += $Entry
+            Write-Host $Entry
+            $UrlList += "----------------------------------------"
+        }
+        
+        # 寫入檔案
+        $UrlList | Set-Content $UrlLogFile -Encoding UTF8
+        Write-Host "`n📄 網址清單已儲存至: $UrlLogFile" -ForegroundColor Green
+    }
+
+    # 更新版本雜湊紀錄 (防止 Dashboard 報錯)
     Write-Host "正在更新版本雜湊紀錄..."
     $CurrentHash = ""
+    # 注意：這裡指回 SourceDir 確保計算的是原始腳本
     Get-ChildItem "$SourceDir\Scripts" -Include "*.ps1", "*.bat" -Recurse | Sort-Object Name | ForEach-Object { 
         $CurrentHash += (Get-FileHash $_.FullName).Hash 
     }
     Set-Content -Path $HashFile -Value $CurrentHash -Force
     Write-Host "雜湊已儲存至: $HashFile" -ForegroundColor Gray
-# --- [新增] 自動列出所有 .ps1 的 Raw 網址 ---
-    Write-Host "`n[INFO] 正在生成全腳本 Raw 網址..." -ForegroundColor Cyan
-    $Remote = git remote get-url origin
-    if ($Remote -match "github\.com[:/](?<U>.+?)/(?<R>.+?)(\.git)?$") {
-        $User = $Matches.U; $Repo = $Matches.R
-        $Sha = git rev-parse HEAD
-        Write-Host "--- GitHub Raw Links (版本: $($Sha.Substring(0,7))) ---" -ForegroundColor Yellow
-        Get-ChildItem -Path . -Filter "*.ps1" -Recurse | ForEach-Object {
-            $RelPath = $_.FullName.Substring($PWD.Path.Length + 1).Replace("\", "/")
-            $Url = "https://raw.githubusercontent.com/$User/$Repo/$Sha/$RelPath"
-            Write-Host "$RelPath`n$Url"
-        }
-        Write-Host "----------------------------------------------------" -ForegroundColor Yellow
-    }
-# --- [新增功能] 生成並顯示 Raw 網址 ---
-    Write-Host "`n[INFO] 正在生成 Raw 網址..." -ForegroundColor Cyan
-    try {
-        # 1. 獲取 User/Repo 名稱
-        $RemoteURL = git remote get-url origin
-        if ($RemoteURL -match "github\.com[:/](?<User>.+?)/(?<Repo>.+?)(\.git)?$") {
-            $GitUser = $Matches.User
-            $GitRepo = $Matches.Repo
-            
-            # 2. 獲取剛推送的 Commit SHA (確保網址永久有效)
-            $CommitSHA = git rev-parse HEAD
-            
-            # 3. 定義想顯示的檔案 (可自行增減)
-            $TargetFiles = @("Dashboard.ps1", "Master.ps1", "Payload.ps1")
-            
-            Write-Host "========================================" -ForegroundColor Yellow
-            Write-Host "GitHub Raw 永久連結 (版本: $($CommitSHA.Substring(0,7)))" -ForegroundColor Yellow
-            foreach ($File in $TargetFiles) {
-                # 組合網址: https://raw.githubusercontent.com/USER/REPO/SHA/PATH
-                $RawUrl = "https://raw.githubusercontent.com/$GitUser/$GitRepo/$CommitSHA/Scripts/$File"
-                Write-Host "`n$File :" -ForegroundColor Green
-                Write-Host $RawUrl
-            }
-            Write-Host "========================================" -ForegroundColor Yellow
-        } else {
-            Write-Host "無法解析 GitHub 儲存庫路徑，跳過網址生成。" -ForegroundColor Gray
-        }
-    } catch {
-        Write-Host "生成網址時發生錯誤: $_" -ForegroundColor Red
-    }
 
 } catch {
     Write-Host "發生錯誤: $_" -ForegroundColor Red
