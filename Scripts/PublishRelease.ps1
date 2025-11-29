@@ -93,6 +93,36 @@ try {
     }
     Set-Content -Path $HashFile -Value $CurrentHash -Force
     Write-Host "雜湊已儲存至: $HashFile" -ForegroundColor Gray
+# --- [新增功能] 生成並顯示 Raw 網址 ---
+    Write-Host "`n[INFO] 正在生成 Raw 網址..." -ForegroundColor Cyan
+    try {
+        # 1. 獲取 User/Repo 名稱
+        $RemoteURL = git remote get-url origin
+        if ($RemoteURL -match "github\.com[:/](?<User>.+?)/(?<Repo>.+?)(\.git)?$") {
+            $GitUser = $Matches.User
+            $GitRepo = $Matches.Repo
+            
+            # 2. 獲取剛推送的 Commit SHA (確保網址永久有效)
+            $CommitSHA = git rev-parse HEAD
+            
+            # 3. 定義想顯示的檔案 (可自行增減)
+            $TargetFiles = @("Dashboard.ps1", "Master.ps1", "Payload.ps1")
+            
+            Write-Host "========================================" -ForegroundColor Yellow
+            Write-Host "GitHub Raw 永久連結 (版本: $($CommitSHA.Substring(0,7)))" -ForegroundColor Yellow
+            foreach ($File in $TargetFiles) {
+                # 組合網址: https://raw.githubusercontent.com/USER/REPO/SHA/PATH
+                $RawUrl = "https://raw.githubusercontent.com/$GitUser/$GitRepo/$CommitSHA/Scripts/$File"
+                Write-Host "`n$File :" -ForegroundColor Green
+                Write-Host $RawUrl
+            }
+            Write-Host "========================================" -ForegroundColor Yellow
+        } else {
+            Write-Host "無法解析 GitHub 儲存庫路徑，跳過網址生成。" -ForegroundColor Gray
+        }
+    } catch {
+        Write-Host "生成網址時發生錯誤: $_" -ForegroundColor Red
+    }
 
 } catch {
     Write-Host "發生錯誤: $_" -ForegroundColor Red
