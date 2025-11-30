@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Payload V5.16 - 變數修復版 (解決 03:55 不等待問題)
+# AutoTask Payload V5.19 - 診斷與通知增強版
 # =============================================================================
 $ErrorActionPreference = "Stop"
 trap {
@@ -69,7 +69,7 @@ function Write-Log {
 }
 
 # --- [1. 啟動前安全檢查] ---
-Write-Log "Payload 啟動 (V5.16)..." "Cyan"
+Write-Log "Payload 啟動 (V5.19)..." "Cyan"
 
 try {
     $CurrentPID = $PID
@@ -95,13 +95,24 @@ if (Test-Path $EnvConf) {
 }
 
 # --- [輔助函數] ---
-function Get-Error-Diagnosis { param($e,$p); $r="未知";$f="All Log"; switch($e){"LogLockFail"{$r="BGI啟動超時";$f="Payload.log"} "ProcessCrash"{$r="BGI閃退";$f="bg.log,pl.log"} "HeartbeatTimeout"{$r="卡死";$f="bg.log"} "NetworkError"{$r="斷網";$f="pl.log"}}; return @{Reason=$r;Files=$f} }
-function Send-Notify-With-Diagnosis { param($t,$m,$c,$d); $f=@{"Err"=$d.Reason;"File"=$d.Files;"Bak"=$m}; if(Test-Path $NotifyScript){try{& $NotifyScript -Title $t -Message "Error" -Color $c -Fields $f}catch{}} }
+function Get-Error-Diagnosis { param($e,$p); $r="未知";$f="All Log"; switch($e){"LogLockFail"{$r="BGI啟動超時";$f="Payload.log"} "ProcessCrash"{$r="BGI閃退";$f="bg.log,pl.log"} "HeartbeatTimeout"{$r="卡死";$f="bg.log"} "NetworkError"{$r="斷網";$f="pl.log"}}; return @{Reason=$r;Files=$f;LogPath=$p} }
+
+# [Notify整合] 這裡增加了 LogPath 和 Mention 參數
+function Send-Notify-With-Diagnosis { 
+    param($t,$m,$c,$d); 
+    $f=@{"Err"=$d.Reason;"File"=$d.Files;"Bak"=$m}; 
+    $targetLog = if($d.LogPath){$d.LogPath.FullName}else{""}
+    if(Test-Path $NotifyScript){
+        try{
+            & $NotifyScript -Title $t -Message "Error: $($d.Reason)" -Color $c -Fields $f -LogPath $targetLog -Mention $true
+        }catch{}
+    } 
+}
+
 function Set-BetterGIResinConfig { param($c); if(-not(Test-Path $ResinConf)){return $false}; try{ $r=Get-Content $ResinConf -Raw|ConvertFrom-Json; if(-not $r.$c){return $false}; Write-Log "Resin: $c" "Cyan"; if(-not(Test-Path $BakFile)){Copy-Item $BettergiUserConf $BakFile -Force}; $b=Get-Content $BettergiUserConf -Raw|ConvertFrom-Json; $s=if($r.$c.TaskType-eq"Stygian"){$b.autoStygianOnslaughtConfig}else{$b.autoDomainConfig}; if($r.$c.Priority){$s.resinPriorityList=$r.$c.Priority}; if($r.$c.ResinMode-eq"Count"){$s.specifyResinUse=$true;$s.originalResinUseCount=$r.$c.Counts.Original}else{$s.specifyResinUse=$false}; $b|ConvertTo-Json -Depth 20|Set-Content $BettergiUserConf -Enc UTF8; return $true }catch{return $false} }
 function Restore-BetterGIConfig { if(Test-Path $BakFile){try{Copy-Item $BakFile $BettergiUserConf -Force;Remove-Item $BakFile -Force;Write-Log "Resin Restored" "Gray"}catch{}} }
 function Check-Network { $r=0; while($r-lt 12){if(Test-Connection "8.8.8.8" -Count 1 -Quiet){return $true};Start-Sleep 5;$r++};Write-Log "Net Fail" "Red";return $false }
 function Send-Notify { param($t,$m,$c); if(Test-Path $NotifyScript){Start-Process powershell -Arg "-ExecutionPolicy Bypass -File `"$NotifyScript`" -Title `"$t`" -Message `"$m`" -Color `"$c`"" -WindowStyle Hidden} }
-function Check-Success-Log { param($p); try{$l=Get-Content $p -Tail 50 -Enc UTF8 -EA SilentlyContinue;if($l-match "一条龙.*任务结束"){return $true}}catch{};return $false }
 function Backup-Logs { $t=Get-Date -Format "yyyyMMdd_HHmmss";$d="$BackupRootDir\Failed_$t";New-Item $d -ItemType Directory -Force|Out-Null;$l=(Get-Date).AddHours(-24);$da=New-Item "$d\AutoTask_Logs" -ItemType Directory;Get-ChildItem $LogDir -Filter "*.log"|Where{$_.LastWriteTime-gt$l}|Copy-Item -Dest $da -Force;$db=New-Item "$d\BetterGI_Logs" -ItemType Directory;Get-ChildItem $LogDirBG -Filter "*.log"|Where{$_.LastWriteTime-gt$l}|Copy-Item -Dest $db -Force;if($1RemoteLogDir-and(Test-Path $1RemoteLogDir)){$dr=New-Item "$d\1Remote_Logs" -ItemType Directory;Get-ChildItem $1RemoteLogDir -Include "*.md","*.log" -Recurse|Where{$_.LastWriteTime-gt$l}|Copy-Item -Dest $dr -Force};return $d }
 function Update-Status { param($s,$r); try{$o=@{Date=(Get-Date).AddHours(-4).ToString("yyyyMMdd");Status=$s;RetryCount=$r;LastUpdate=(Get-Date).ToString("yyyy-MM-dd HH:mm:ss")};$o|ConvertTo-Json|Set-Content $TaskStatusFile}catch{} }
 function Get-TargetConfig { $t=(Get-Date).AddHours(-4);$ds=$t.ToString("yyyyMMdd");if(Test-Path $DateMap){try{$m=Get-Content $DateMap;foreach($l in $m){if($l-match"^$ds=(.+)$"){return $matches[1]}}}catch{}};if(Test-Path $WeeklyConf){try{$w=Get-Content $WeeklyConf -Raw|ConvertFrom-Json;if($w){if($w.IT_Period_Days-gt 0 -and $t.Day-ge 1 -and $t.Day-le $w.IT_Period_Days){return $w.IT_Period_Config};return $w.$($t.DayOfWeek.ToString())}}catch{}};return "day" }
@@ -134,9 +145,7 @@ if ($CurrentTime -ge $ForceEndStart -and $CurrentTime -lt $TodayLimit) {
 }
 
 # Wait 04:00
-# [修正] 再次確認 TargetTime 正確定義
 $TargetTime = $TodayLimit 
-
 if ($CurrentTime.Hour -eq 3) { 
     while ((Get-Date) -lt $TargetTime) { 
         $Span = $TargetTime - (Get-Date)
@@ -200,9 +209,14 @@ Check-Network
 if (-not (Check-Network)) { $ErrorType = "NetworkError" }
 
 while ($RetryCount -le $MaxRetries) {
+    
     Update-Status "Running" $RetryCount
     $AllConfigSuccess = $true
     $ErrorType = ""
+    
+    # [診斷] 記錄開始前的 BetterGI 狀態
+    $PreCheckBG = Get-Process "BetterGI" -ErrorAction SilentlyContinue
+    if ($PreCheckBG) { Write-Log "診斷: 啟動前偵測到殘留 BetterGI (PID: $($PreCheckBG.Id))" "Gray" }
     
     foreach ($CurrentConfig in $ConfigQueue) {
         if ([string]::IsNullOrWhiteSpace($CurrentConfig)) { continue }
@@ -240,25 +254,78 @@ while ($RetryCount -le $MaxRetries) {
             Start-Sleep 1
         }
 
+        # --- [日誌鎖定失敗時的深度診斷] ---
         if (-not $LogFile) { 
-            Write-Log "錯誤：日誌鎖定失敗！" "Red"; $IsFailed = $true 
+            Write-Log "錯誤：日誌鎖定失敗！" "Red"
+            $IsFailed = $true 
             $ErrorType = "LogLockFail"
+            
+            # [診斷] 列出當前目錄下所有 log 檔案詳情
+            Write-Log "--- [診斷資訊: 檔案列表] ---" "Gray"
+            try {
+                $DebugFiles = Get-ChildItem $LogDirBG -Filter "better-genshin-impact*.log"
+                if ($DebugFiles) {
+                    foreach ($f in $DebugFiles) {
+                        $TimeDiff = ((Get-Date) - $f.LastWriteTime).TotalMinutes
+                        Write-Log "發現檔案: $($f.Name) | 時間: $($f.LastWriteTime.ToString('HH:mm:ss')) | 距今: $([math]::Round($TimeDiff, 1)) 分" "Gray"
+                    }
+                } else {
+                    Write-Log "目錄內無任何符合 'better-genshin-impact*.log' 的檔案。" "Yellow"
+                }
+                Write-Log "目標目錄: $LogDirBG" "Gray"
+            } catch {
+                Write-Log "無法讀取目錄: $_" "Red"
+            }
+            Write-Log "----------------------------" "Gray"
+            
         } else {
-            Write-Log "鎖定日誌: $($LogFile.Name)"
-            $CurrentSize = 0; try { $CurrentSize = (Get-Item $LogFile.FullName).Length } catch {}
+            # [核心修正] 記錄初始 Offset
+            $LogPath = $LogFile.FullName
+            $StartOffset = 0
+            try { $StartOffset = (Get-Item $LogPath).Length } catch {}
+            Write-Log "鎖定日誌: $($LogFile.Name) (初始 Offset: $StartOffset)" "Cyan"
+            
             while (-not $IsSuccess -and -not $IsFailed) {
                 Start-Sleep 5
-                if (Check-Success-Log $LogFile.FullName) { Write-Log "完成！" "Green"; $IsSuccess=$true; break }
+                
+                # 1. 嚴格增量讀取
+                $NewContent = ""
+                try {
+                    $LogFile.Refresh()
+                    $CurrentSize = $LogFile.Length
+                    if ($CurrentSize -gt $StartOffset) {
+                        $Stream = [System.IO.File]::Open($LogPath, 'Open', 'Read', 'ReadWrite')
+                        $Reader = New-Object System.IO.StreamReader($Stream, [System.Text.Encoding]::UTF8)
+                        $null = $Reader.BaseStream.Seek($StartOffset, [System.IO.SeekOrigin]::Begin)
+                        $NewContent = $Reader.ReadToEnd()
+                        $Reader.Close(); $Stream.Close()
+                        $StartOffset = $CurrentSize
+                    }
+                } catch { Write-Log "讀取日誌警告: $_" "Yellow" }
+
+                # 2. 判斷關鍵字
+                if ($NewContent -match "$SuccessKeyword|全部完成") {
+                     Write-Log "偵測到完成訊號！(觸發: '$($matches[0])')" "Green"
+                     $IsSuccess = $true; break 
+                }
+                
+                # 3. 進程與卡死檢查
                 if (-not (Get-Process "BetterGI" -ErrorAction SilentlyContinue)) {
                     Start-Sleep 3
                     if (-not (Get-Process "BetterGI" -ErrorAction SilentlyContinue)) {
-                         if (Check-Success-Log $LogFile.FullName) { Write-Log "完成(進程結束)。" "Green"; $IsSuccess=$true }
-                         else { Write-Log "意外退出！" "Red"; $IsFailed=$true; $ErrorType = "ProcessCrash" }
+                         Write-Log "BetterGI 進程已結束，檢查最後狀態..." "Yellow"
+                         # 再次讀取最後一點內容以防遺漏
+                         if ($NewContent -match "$SuccessKeyword|全部完成") {
+                             Write-Log "完成(進程結束)。" "Green"; $IsSuccess=$true
+                         } else {
+                             Write-Log "意外退出！(未偵測到成功訊號)" "Red"; $IsFailed=$true; $ErrorType = "ProcessCrash"
+                         }
                          break
                     }
                 }
+                
                 $LogFile.Refresh()
-                if (((Get-Date) - $LogFile.LastWriteTime).TotalMinutes -gt $HeartbeatLimit) { Write-Log "卡死判定！" "Red"; $IsFailed=$true; $ErrorType = "HeartbeatTimeout" }
+                if (((Get-Date) - $LogFile.LastWriteTime).TotalMinutes -gt $HeartbeatLimit) { Write-Log "卡死判定！(日誌靜止超過 $HeartbeatLimit 分)" "Red"; $IsFailed=$true; $ErrorType = "HeartbeatTimeout" }
             }
         }
 
@@ -289,7 +356,10 @@ while ($RetryCount -le $MaxRetries) {
         if ($RetryCount -gt $MaxRetries) {
             $BackupPath = Backup-Logs
             $Diagnosis = Get-Error-Diagnosis $ErrorType $LogFile
+            
+            # [新] 使用增強版通知功能
             Send-Notify-With-Diagnosis "Fail" $BackupPath "Red" $Diagnosis
+            
             Update-Status "Failed" $RetryCount
             New-Item $FailFlag -Force | Out-Null
             if ($IsForceRun) { Start-Sleep 10 } else { Start-Sleep 3 }

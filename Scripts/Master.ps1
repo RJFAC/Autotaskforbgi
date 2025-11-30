@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Master V5.7 - 跨日修正版 (03:55 啟動邏輯優化)
+# AutoTask Master V5.10 - 診斷增強版
 # =============================================================================
 
 # --- [0. 權限自我檢查] ---
@@ -68,7 +68,7 @@ function Check-Network {
     Write-Log "⚠️ 網路連線逾時。" "Red"; return $false
 }
 
-Write-Log ">>> Master 啟動 (Admin Mode)..." "Cyan"
+Write-Log ">>> Master 啟動 (Admin Mode - V5.10)..." "Cyan"
 
 # =============================================================================
 # [核心邏輯] 判斷是「全新啟動」還是「接手續跑」
@@ -86,18 +86,7 @@ if (-not $IsResume) {
     # --- [全新啟動流程] ---
     if (-not (Test-Path $ManualFlag)) {
         
-        # [核心修正] 日期判斷 (AddHours -4)
         $Now = Get-Date
-        # 如果現在是 03:50 ~ 04:00 之間，視為「即將到來的今天」
-        # 此時 -4h 會得到昨天，如果我們用它去查 PauseLog，可能會查到昨天的紀錄。
-        # 但因為 04:00 才是換日點，理論上 03:55 啟動時，它的任務目標是「今天的 04:00」。
-        # 所以我們應該稍微寬容一點：如果現在接近 04:00，我們查的是「明天(相對於-4h)」的設定嗎？
-        # 不，最簡單的邏輯是：03:55 啟動時，PauseLog 應該還沒寫入今天的暫停 (除非手動預設)。
-        # 如果使用者在昨天設了暫停 (停在昨天)，那麼今天 03:55 檢查 -4h (昨天) 會被暫停擋住。
-        # 解決方案：如果現在 > 03:50，我們暫時假設它是為了「新的一天」而跑，
-        # 所以我們檢查 PauseLog 時，應該檢查 `AddHours(-4)` 之後的日期 (如果昨天暫停，今天應該跑)。
-        # 讓我們先保持 -4h 邏輯，但如果發現是「昨天」已完成 (`LastRunLog`)，而現在時間接近 04:00，則允許執行。
-
         $CheckDateStr = $Now.AddHours(-4).ToString("yyyyMMdd")
         
         if (Test-Path $PauseLog) {
@@ -110,10 +99,7 @@ if (-not $IsResume) {
             if (-not (Test-Path $RunFlag)) { Write-Log "非任務時間，退出。" "Gray"; exit }
         }
         
-        # [核心修正] 如果 LastRun 紀錄的是昨天，且現在是 03:55，代表是新任務，不要退出
-        # 原本邏輯：檢查 LastRun == CurrentDateStr。
-        # 如果昨天跑過，LastRun=昨天。現在03:55，CurrentDateStr=昨天。-> 相等 -> 退出！ (Bug)
-        # 修正：如果現在是 03:50~03:59，我們跳過 LastRun 檢查，交給 Payload 去擋 (Payload 會等到 04:00 後再檢查)
+        # 03:50~03:59 跳過 LastRun 檢查 (由 Payload 處理)
         if ($Now.Hour -ne 3 -or $Now.Minute -lt 50) {
              if (Test-Path $LastRunLog) {
                 if ((Get-Content $LastRunLog) -eq $CheckDateStr) { Write-Log "今日任務已完成。" "Green"; exit }
@@ -176,7 +162,7 @@ Write-Log ">>> 進入監督模式" "Green"
 $PayloadLaunched = $false
 if ($IsResume) { $PayloadLaunched = $true }
 
-# [新] 連續重啟計數器
+# 連續重啟計數器
 $RapidRestartCount = 0
 $LastRestartTime = Get-Date
 
@@ -193,9 +179,15 @@ while ($true) {
     }
 
     $PayloadProc = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*Payload.ps1*" }
+    
+    # --- [Master.ps1 修改片段：強化 Payload 消失診斷] ---
     if (-not $PayloadProc) {
         if ($PayloadLaunched) {
             $Now = Get-Date
+            # [診斷] 記錄系統資源狀態，判斷是否為 OOM (Out Of Memory) 導致
+            $Mem = Get-CimInstance Win32_OperatingSystem | Select-Object @{Name="FreeGB";Expression={$_.FreePhysicalMemory/1MB}}
+            Write-Log "⚠️ Payload 消失！(系統剩餘記憶體: $([math]::Round($Mem.FreeGB, 2)) GB)" "Red"
+            
             if (($Now - $LastRestartTime).TotalSeconds -lt 60) { $RapidRestartCount++ } else { $RapidRestartCount = 1 }
             $LastRestartTime = $Now
 
@@ -206,17 +198,27 @@ while ($true) {
                 exit
             }
 
-            Write-Log "⚠️ Payload 消失 (嘗試 $RapidRestartCount)，重啟..." "Red"
-            schtasks /run /tn "Auto_BetterGI_Payload"
+            Write-Log "⚠️ 正在執行救援重啟 (嘗試 $RapidRestartCount)..." "Yellow"
+            $LogOutput = schtasks /run /tn "Auto_BetterGI_Payload" 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                 Write-Log "排程啟動指令發送成功。" "Green"
+            } else {
+                 Write-Log "⚠️ 排程啟動失敗！代碼: $LASTEXITCODE, 訊息: $LogOutput" "Red"
+            }
             Start-Sleep 10
         } else {
+            # 這裡保持原有的 RDP 重連邏輯，但增加一行日誌
             if ((Get-Date) -gt $SupervisorStart.AddMinutes(15)) {
-                 Write-Log "Payload 啟動超時，重試 RDP..." "Yellow"
+                 Write-Log "Payload 啟動超時 (15分鐘未偵測到進程)，判定 RDP 失效，重試 RDP..." "Yellow"
                  Start-Process -FilePath $1RemoteExe -ArgumentList "-r Remote" -WorkingDirectory $1RemoteDir
                  $SupervisorStart = Get-Date
             }
         }
     } else {
+        # [診斷] 捕捉並記錄 Payload 的 PID，方便對照日誌
+        if (-not $PayloadLaunched) {
+             Write-Log "偵測到 Payload 運作中 (PID: $($PayloadProc.ProcessId))" "Cyan"
+        }
         $PayloadLaunched = $true; $SupervisorStart = Get-Date 
     }
 }
@@ -239,7 +241,6 @@ while ($true) {
 Stop-Process -Name "1Remote" -Force -ErrorAction SilentlyContinue
 Remove-Item $DoneFlag -Force
 
-# [修正] 不關機檢查也改為 -4
 $CurrentDateStr = (Get-Date).AddHours(-4).ToString("yyyyMMdd")
 if (Test-Path $NoShutdownLog) {
     if ((Get-Content $NoShutdownLog) -contains $CurrentDateStr) { Write-Log "今日不關機。" "Cyan"; exit }
