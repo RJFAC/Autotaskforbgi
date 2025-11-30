@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Payload V5.19 - 診斷與通知增強版
+# AutoTask Payload V5.20 - 邏輯修正與診斷增強
 # =============================================================================
 $ErrorActionPreference = "Stop"
 trap {
@@ -69,7 +69,7 @@ function Write-Log {
 }
 
 # --- [1. 啟動前安全檢查] ---
-Write-Log "Payload 啟動 (V5.19)..." "Cyan"
+Write-Log "Payload 啟動 (V5.20)..." "Cyan"
 
 try {
     $CurrentPID = $PID
@@ -96,8 +96,6 @@ if (Test-Path $EnvConf) {
 
 # --- [輔助函數] ---
 function Get-Error-Diagnosis { param($e,$p); $r="未知";$f="All Log"; switch($e){"LogLockFail"{$r="BGI啟動超時";$f="Payload.log"} "ProcessCrash"{$r="BGI閃退";$f="bg.log,pl.log"} "HeartbeatTimeout"{$r="卡死";$f="bg.log"} "NetworkError"{$r="斷網";$f="pl.log"}}; return @{Reason=$r;Files=$f;LogPath=$p} }
-
-# [Notify整合] 這裡增加了 LogPath 和 Mention 參數
 function Send-Notify-With-Diagnosis { 
     param($t,$m,$c,$d); 
     $f=@{"Err"=$d.Reason;"File"=$d.Files;"Bak"=$m}; 
@@ -108,7 +106,6 @@ function Send-Notify-With-Diagnosis {
         }catch{}
     } 
 }
-
 function Set-BetterGIResinConfig { param($c); if(-not(Test-Path $ResinConf)){return $false}; try{ $r=Get-Content $ResinConf -Raw|ConvertFrom-Json; if(-not $r.$c){return $false}; Write-Log "Resin: $c" "Cyan"; if(-not(Test-Path $BakFile)){Copy-Item $BettergiUserConf $BakFile -Force}; $b=Get-Content $BettergiUserConf -Raw|ConvertFrom-Json; $s=if($r.$c.TaskType-eq"Stygian"){$b.autoStygianOnslaughtConfig}else{$b.autoDomainConfig}; if($r.$c.Priority){$s.resinPriorityList=$r.$c.Priority}; if($r.$c.ResinMode-eq"Count"){$s.specifyResinUse=$true;$s.originalResinUseCount=$r.$c.Counts.Original}else{$s.specifyResinUse=$false}; $b|ConvertTo-Json -Depth 20|Set-Content $BettergiUserConf -Enc UTF8; return $true }catch{return $false} }
 function Restore-BetterGIConfig { if(Test-Path $BakFile){try{Copy-Item $BakFile $BettergiUserConf -Force;Remove-Item $BakFile -Force;Write-Log "Resin Restored" "Gray"}catch{}} }
 function Check-Network { $r=0; while($r-lt 12){if(Test-Connection "8.8.8.8" -Count 1 -Quiet){return $true};Start-Sleep 5;$r++};Write-Log "Net Fail" "Red";return $false }
@@ -173,10 +170,15 @@ if (-not $IsForceRun) {
         New-Item $DoneFlag -Force | Out-Null
         exit 
     }
+    # [核心修正] 如果任務已完成，執行登出
     if ((Test-Path $LastRunLog) -and ((Get-Content $LastRunLog) -eq $CurrentDateStr)) { 
-        Write-Log "今日任務已完成。腳本結束 (保留連線)。" "Green"
+        Write-Log "今日任務已完成。" "Green"
         Update-Status "Success" 0
         New-Item $DoneFlag -Force | Out-Null
+        
+        Write-Log "任務目標已達成，執行快速登出..." "Yellow"
+        Start-Sleep 2
+        logoff
         exit 
     }
 }
@@ -214,7 +216,6 @@ while ($RetryCount -le $MaxRetries) {
     $AllConfigSuccess = $true
     $ErrorType = ""
     
-    # [診斷] 記錄開始前的 BetterGI 狀態
     $PreCheckBG = Get-Process "BetterGI" -ErrorAction SilentlyContinue
     if ($PreCheckBG) { Write-Log "診斷: 啟動前偵測到殘留 BetterGI (PID: $($PreCheckBG.Id))" "Gray" }
     
@@ -254,13 +255,10 @@ while ($RetryCount -le $MaxRetries) {
             Start-Sleep 1
         }
 
-        # --- [日誌鎖定失敗時的深度診斷] ---
         if (-not $LogFile) { 
             Write-Log "錯誤：日誌鎖定失敗！" "Red"
             $IsFailed = $true 
             $ErrorType = "LogLockFail"
-            
-            # [診斷] 列出當前目錄下所有 log 檔案詳情
             Write-Log "--- [診斷資訊: 檔案列表] ---" "Gray"
             try {
                 $DebugFiles = Get-ChildItem $LogDirBG -Filter "better-genshin-impact*.log"
@@ -272,14 +270,11 @@ while ($RetryCount -le $MaxRetries) {
                 } else {
                     Write-Log "目錄內無任何符合 'better-genshin-impact*.log' 的檔案。" "Yellow"
                 }
-                Write-Log "目標目錄: $LogDirBG" "Gray"
             } catch {
                 Write-Log "無法讀取目錄: $_" "Red"
             }
             Write-Log "----------------------------" "Gray"
-            
         } else {
-            # [核心修正] 記錄初始 Offset
             $LogPath = $LogFile.FullName
             $StartOffset = 0
             try { $StartOffset = (Get-Item $LogPath).Length } catch {}
@@ -288,7 +283,6 @@ while ($RetryCount -le $MaxRetries) {
             while (-not $IsSuccess -and -not $IsFailed) {
                 Start-Sleep 5
                 
-                # 1. 嚴格增量讀取
                 $NewContent = ""
                 try {
                     $LogFile.Refresh()
@@ -303,18 +297,15 @@ while ($RetryCount -le $MaxRetries) {
                     }
                 } catch { Write-Log "讀取日誌警告: $_" "Yellow" }
 
-                # 2. 判斷關鍵字
                 if ($NewContent -match "$SuccessKeyword|全部完成") {
                      Write-Log "偵測到完成訊號！(觸發: '$($matches[0])')" "Green"
                      $IsSuccess = $true; break 
                 }
                 
-                # 3. 進程與卡死檢查
                 if (-not (Get-Process "BetterGI" -ErrorAction SilentlyContinue)) {
                     Start-Sleep 3
                     if (-not (Get-Process "BetterGI" -ErrorAction SilentlyContinue)) {
                          Write-Log "BetterGI 進程已結束，檢查最後狀態..." "Yellow"
-                         # 再次讀取最後一點內容以防遺漏
                          if ($NewContent -match "$SuccessKeyword|全部完成") {
                              Write-Log "完成(進程結束)。" "Green"; $IsSuccess=$true
                          } else {
@@ -356,10 +347,7 @@ while ($RetryCount -le $MaxRetries) {
         if ($RetryCount -gt $MaxRetries) {
             $BackupPath = Backup-Logs
             $Diagnosis = Get-Error-Diagnosis $ErrorType $LogFile
-            
-            # [新] 使用增強版通知功能
             Send-Notify-With-Diagnosis "Fail" $BackupPath "Red" $Diagnosis
-            
             Update-Status "Failed" $RetryCount
             New-Item $FailFlag -Force | Out-Null
             if ($IsForceRun) { Start-Sleep 10 } else { Start-Sleep 3 }

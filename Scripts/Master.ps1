@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Master V5.10 - 診斷增強版
+# AutoTask Master V5.11 - 登出機制強化版
 # =============================================================================
 
 # --- [0. 權限自我檢查] ---
@@ -68,7 +68,7 @@ function Check-Network {
     Write-Log "⚠️ 網路連線逾時。" "Red"; return $false
 }
 
-Write-Log ">>> Master 啟動 (Admin Mode - V5.10)..." "Cyan"
+Write-Log ">>> Master 啟動 (Admin Mode - V5.11)..." "Cyan"
 
 # =============================================================================
 # [核心邏輯] 判斷是「全新啟動」還是「接手續跑」
@@ -180,11 +180,9 @@ while ($true) {
 
     $PayloadProc = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*Payload.ps1*" }
     
-    # --- [Master.ps1 修改片段：強化 Payload 消失診斷] ---
     if (-not $PayloadProc) {
         if ($PayloadLaunched) {
             $Now = Get-Date
-            # [診斷] 記錄系統資源狀態，判斷是否為 OOM (Out Of Memory) 導致
             $Mem = Get-CimInstance Win32_OperatingSystem | Select-Object @{Name="FreeGB";Expression={$_.FreePhysicalMemory/1MB}}
             Write-Log "⚠️ Payload 消失！(系統剩餘記憶體: $([math]::Round($Mem.FreeGB, 2)) GB)" "Red"
             
@@ -207,7 +205,6 @@ while ($true) {
             }
             Start-Sleep 10
         } else {
-            # 這裡保持原有的 RDP 重連邏輯，但增加一行日誌
             if ((Get-Date) -gt $SupervisorStart.AddMinutes(15)) {
                  Write-Log "Payload 啟動超時 (15分鐘未偵測到進程)，判定 RDP 失效，重試 RDP..." "Yellow"
                  Start-Process -FilePath $1RemoteExe -ArgumentList "-r Remote" -WorkingDirectory $1RemoteDir
@@ -215,7 +212,6 @@ while ($true) {
             }
         }
     } else {
-        # [診斷] 捕捉並記錄 Payload 的 PID，方便對照日誌
         if (-not $PayloadLaunched) {
              Write-Log "偵測到 Payload 運作中 (PID: $($PayloadProc.ProcessId))" "Cyan"
         }
@@ -223,7 +219,7 @@ while ($true) {
     }
 }
 
-# --- [清理] ---
+# --- [清理與強制登出邏輯修正] ---
 Write-Log "任務結束，清理中..."
 Remove-Item $RunFlag -Force
 Start-Sleep 5
@@ -231,11 +227,46 @@ $MonitorProc = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | W
 if ($MonitorProc) { Stop-Process -Id $MonitorProc.ProcessId -Force }
 
 Write-Log "等待 Remote 登出..."
-$Timeout=0
+$Timeout = 0
+$MaxTimeout = 60 # 60 * 3秒 = 3分鐘
+
 while ($true) {
-    if (-not (qwinsta 2>$null | Select-String "\bRemote\b")) { Write-Log "Remote 已登出。" "Green"; break }
-    if ($Timeout -ge 60) { Write-Log "登出逾時。" "Yellow"; break }
-    Start-Sleep 3; $Timeout++
+    # 1. 獲取並診斷 qwinsta 狀態
+    $SessionInfo = qwinsta 2>$null | Select-String "\bRemote\b"
+    
+    if (-not $SessionInfo) {
+        Write-Log "Remote 已登出 (Session 消失)。" "Green"
+        break 
+    }
+
+    # 2. 逾時處置 (強制踢除邏輯)
+    if ($Timeout -ge $MaxTimeout) { 
+        Write-Log "⚠️ 登出逾時 (3分鐘)！正在執行強制驅逐..." "Red"
+        Write-Log "滯留 Session 狀態: $($SessionInfo.ToString().Trim())" "Gray"
+        
+        try {
+            $Line = $SessionInfo.ToString().Trim() -replace "\s+", " "
+            $Parts = $Line.Split(" ")
+            $SessionID = $null
+            
+            foreach ($part in $Parts) { 
+                if ($part -match "^\d+$") { $SessionID = $part; break } 
+            }
+
+            if ($SessionID) {
+                Write-Log "執行: logoff $SessionID" "Yellow"
+                cmd /c "logoff $SessionID"
+            } else {
+                Write-Log "錯誤: 無法解析 Session ID，嘗試重啟 1Remote 服務或依賴自動關機。" "Red"
+            }
+        } catch {
+            Write-Log "強制登出時發生例外: $_" "Red"
+        }
+        break 
+    }
+
+    Start-Sleep 3
+    $Timeout++
 }
 
 Stop-Process -Name "1Remote" -Force -ErrorAction SilentlyContinue
