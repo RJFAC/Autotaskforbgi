@@ -1,5 +1,5 @@
 ﻿# =============================================================================
-# AutoTask Monitor V3.6 - TCP 狀態監控版 (邏輯修正)
+# AutoTask Monitor V3.7 - TCP 狀態監控/診斷增強版
 # =============================================================================
 
 # --- [定義路徑] ---
@@ -38,18 +38,16 @@ function Write-Log {
 # 清理舊日誌
 try { Get-ChildItem -Path $LogDir -Filter "*.log" | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) } | Remove-Item -Force -ErrorAction SilentlyContinue } catch {}
 
-Write-Log "Monitor 啟動 (V3.6 - TCP 狀態監控/邏輯修正)..." "Cyan"
+Write-Log "Monitor 啟動 (V3.7 - 診斷增強)..." "Cyan"
 
 # --- [狀態變數] ---
 $CurrentLogFile = $null
 $LastSize = 0
 $MyPID = $PID
 
-# [新] 記錄啟動時的檔案時間，用於偵測更新
+# 記錄啟動時的檔案時間，用於偵測更新
 $SelfPath = $PSCommandPath
 $InitialWriteTime = (Get-Item $SelfPath).LastWriteTime
-
-# [新] 初始化網路檢查計時器
 $LastNetCheckTime = Get-Date
 
 while ($true) {
@@ -107,9 +105,8 @@ while ($true) {
                 $LastSize = $CurrentSize
                 
                 if ($NewContent -match "exit with error code") {
-                    Write-Log "⚠️ 偵測到 RDP 斷線訊號！" "Red"
+                    Write-Log "⚠️ 偵測到 RDP 斷線訊號 (Exit code)！" "Red"
                     
-                    # [新] RDP 進程存活診斷
                     $RdpProc = Get-Process "1Remote" -ErrorAction SilentlyContinue
                     if ($RdpProc) {
                         Write-Log "診斷: 1Remote 進程仍在執行 (PID: $($RdpProc.Id))，但連線已斷開。" "Yellow"
@@ -132,22 +129,18 @@ while ($true) {
         }
     }
     
-    # --- [Monitor.ps1 修改片段：TCP 連線診斷 (修正版)] ---
-    # 改用時間差判定，避免因 Sleep 導致跳過檢查
+    # 6. TCP 連線診斷
     if (((Get-Date) - $LastNetCheckTime).TotalSeconds -ge 30) {
-        $LastNetCheckTime = Get-Date # 更新檢查時間
+        $LastNetCheckTime = Get-Date 
         
         $RdpProc = Get-Process "1Remote" -ErrorAction SilentlyContinue
         if ($RdpProc) {
             try {
-                # 檢查 1Remote 是否有建立 TCP 連線 (狀態為 ESTABLISHED)
                 $NetStat = Get-NetTCPConnection -OwningProcess $RdpProc.Id -State Established -ErrorAction SilentlyContinue
                 if (-not $NetStat) {
                     Write-Log "⚠️ 診斷警報: 1Remote 進程存在，但無 ESTABLISHED 連線 (可能已斷線或假死)。" "Yellow"
                 }
-            } catch {
-                # 忽略權限不足或其他錯誤
-            }
+            } catch {}
         }
     }
 

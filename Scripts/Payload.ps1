@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Payload V5.20 - 邏輯修正與診斷增強
+# AutoTask Payload V5.21 - ForceRun 邏輯修正與診斷增強
 # =============================================================================
 $ErrorActionPreference = "Stop"
 trap {
@@ -69,7 +69,7 @@ function Write-Log {
 }
 
 # --- [1. 啟動前安全檢查] ---
-Write-Log "Payload 啟動 (V5.20)..." "Cyan"
+Write-Log "Payload 啟動 (V5.21) PID: $PID..." "Cyan"
 
 try {
     $CurrentPID = $PID
@@ -160,8 +160,14 @@ if ($CurrentTime.Hour -eq 3) {
 Write-Log "日期: $CurrentDateStr"
 Cleanup-Screenshots
 
+# --- [修正: ForceRun 標記檢查] ---
+# 改動: 讀取標記，但不立即刪除，以防腳本崩潰後重啟無法識別
 $IsForceRun = $false
-if (Test-Path $ForceRunFlag) { Write-Log "偵測到 ForceRun" "Magenta"; $IsForceRun = $true; Remove-Item $ForceRunFlag -Force }
+if (Test-Path $ForceRunFlag) { 
+    Write-Log "偵測到 ForceRun (保留標記以支援救援重啟)" "Magenta"
+    $IsForceRun = $true 
+    # Remove-Item $ForceRunFlag -Force # 移除此行
+}
 
 if (-not $IsForceRun) {
     if ((Test-Path $PauseLog) -and ((Get-Content $PauseLog) -contains $CurrentDateStr)) { 
@@ -170,7 +176,7 @@ if (-not $IsForceRun) {
         New-Item $DoneFlag -Force | Out-Null
         exit 
     }
-    # [核心修正] 如果任務已完成，執行登出
+    
     if ((Test-Path $LastRunLog) -and ((Get-Content $LastRunLog) -eq $CurrentDateStr)) { 
         Write-Log "今日任務已完成。" "Green"
         Update-Status "Success" 0
@@ -181,6 +187,8 @@ if (-not $IsForceRun) {
         logoff
         exit 
     }
+} else {
+    Write-Log "診斷: 處於 ForceRun 模式，強制跳過 LastRun 檢查。" "Gray"
 }
 
 $IsUpdateDay = Test-GenshinUpdateDay $CurrentDateObj
@@ -339,6 +347,13 @@ while ($RetryCount -le $MaxRetries) {
         Set-Content $LastRunLog -Value $CurrentDateStr
         while (Get-Process "GenshinImpact" -ErrorAction SilentlyContinue) { Stop-Process -Name "GenshinImpact" -Force; Start-Sleep 5 }
         New-Item $DoneFlag -Force | Out-Null
+        
+        # [修正] 任務成功後才清除 ForceRun 標記
+        if ($IsForceRun) { 
+            Remove-Item $ForceRunFlag -Force -ErrorAction SilentlyContinue
+            Write-Log "任務成功，清理 ForceRun 標記。" "Gray"
+        }
+
         if ($IsForceRun) { Start-Sleep 10 } else { Start-Sleep 3 }
         logoff
         exit
@@ -350,6 +365,13 @@ while ($RetryCount -le $MaxRetries) {
             Send-Notify-With-Diagnosis "Fail" $BackupPath "Red" $Diagnosis
             Update-Status "Failed" $RetryCount
             New-Item $FailFlag -Force | Out-Null
+            
+            # [修正] 任務最終失敗後清除標記，避免無限循環
+            if ($IsForceRun) { 
+                Remove-Item $ForceRunFlag -Force -ErrorAction SilentlyContinue
+                Write-Log "任務失敗 (達最大重試)，清理 ForceRun 標記。" "Gray"
+            }
+
             if ($IsForceRun) { Start-Sleep 10 } else { Start-Sleep 3 }
             logoff
             exit

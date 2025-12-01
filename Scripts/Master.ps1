@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Master V5.11 - 登出機制強化版
+# AutoTask Master V5.12 - 登出機制強化與診斷版
 # =============================================================================
 
 # --- [0. 權限自我檢查] ---
@@ -68,7 +68,7 @@ function Check-Network {
     Write-Log "⚠️ 網路連線逾時。" "Red"; return $false
 }
 
-Write-Log ">>> Master 啟動 (Admin Mode - V5.11)..." "Cyan"
+Write-Log ">>> Master 啟動 (Admin Mode - V5.12)..." "Cyan"
 
 # =============================================================================
 # [核心邏輯] 判斷是「全新啟動」還是「接手續跑」
@@ -131,6 +131,7 @@ if (-not $IsResume) {
         if (Test-Path $RunFlag) { Remove-Item $RunFlag -Force }
         Remove-Item $ManualFlag -Force
         New-Item -Path $ForceRunFlag -ItemType File -Force | Out-Null
+        Write-Log "已建立 ForceRun 標記。" "Cyan"
     }
 
     if (Test-Path $RunFlag) { Remove-Item $RunFlag -Force }
@@ -213,6 +214,7 @@ while ($true) {
         }
     } else {
         if (-not $PayloadLaunched) {
+             # [新增] 記錄 PID 以供後續診斷
              Write-Log "偵測到 Payload 運作中 (PID: $($PayloadProc.ProcessId))" "Cyan"
         }
         $PayloadLaunched = $true; $SupervisorStart = Get-Date 
@@ -231,42 +233,26 @@ $Timeout = 0
 $MaxTimeout = 60 # 60 * 3秒 = 3分鐘
 
 while ($true) {
-    # 1. 獲取並診斷 qwinsta 狀態
     $SessionInfo = qwinsta 2>$null | Select-String "\bRemote\b"
-    
     if (-not $SessionInfo) {
         Write-Log "Remote 已登出 (Session 消失)。" "Green"
         break 
     }
 
-    # 2. 逾時處置 (強制踢除邏輯)
     if ($Timeout -ge $MaxTimeout) { 
         Write-Log "⚠️ 登出逾時 (3分鐘)！正在執行強制驅逐..." "Red"
-        Write-Log "滯留 Session 狀態: $($SessionInfo.ToString().Trim())" "Gray"
-        
         try {
             $Line = $SessionInfo.ToString().Trim() -replace "\s+", " "
-            $Parts = $Line.Split(" ")
-            $SessionID = $null
-            
-            foreach ($part in $Parts) { 
-                if ($part -match "^\d+$") { $SessionID = $part; break } 
-            }
-
+            $Parts = $Line.Split(" "); $SessionID = $null
+            foreach ($part in $Parts) { if ($part -match "^\d+$") { $SessionID = $part; break } }
             if ($SessionID) {
                 Write-Log "執行: logoff $SessionID" "Yellow"
                 cmd /c "logoff $SessionID"
-            } else {
-                Write-Log "錯誤: 無法解析 Session ID，嘗試重啟 1Remote 服務或依賴自動關機。" "Red"
             }
-        } catch {
-            Write-Log "強制登出時發生例外: $_" "Red"
-        }
+        } catch { Write-Log "強制登出時發生例外: $_" "Red" }
         break 
     }
-
-    Start-Sleep 3
-    $Timeout++
+    Start-Sleep 3; $Timeout++
 }
 
 Stop-Process -Name "1Remote" -Force -ErrorAction SilentlyContinue
