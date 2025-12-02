@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Dashboard V8.6 - 系統快照整合版
+# AutoTask Dashboard V8.7 - 按鈕修復版
 # =============================================================================
 
 # --- [隱藏 Console 黑窗] ---
@@ -27,11 +27,11 @@ $PauseLog = "$ConfigsDir\PauseDates.log"
 $NoShutdownLog = "$ConfigsDir\NoShutdown.log"
 $ResinConf = "$ConfigsDir\ResinConfig.json"
 $ManualFlag = "$Dir\Flags\ManualTrigger.flag"
-[cite_start]$BetterGI_UserDir = "C:\Program Files\BetterGI\User\OneDragon" # [cite: 6, 7]
+$BetterGI_UserDir = "C:\Program Files\BetterGI\User\OneDragon"
 $MasterScript = "$ScriptDir\Master.ps1"
 $StopScript = "$ScriptDir\StopAll.ps1"
 $PublishScript = "$ScriptDir\PublishRelease.ps1"
-[cite_start]$SnapshotScript = "$ScriptDir\Get-AutoTaskSnapshot.ps1" # [新增] 快照腳本路徑 
+$SnapshotScript = "$ScriptDir\Get-AutoTaskSnapshot.ps1"
 $HashFile = "$ConfigsDir\ScriptHash.txt"
 
 # --- [全域變數] ---
@@ -45,7 +45,7 @@ $Global:ResinData = @{}
 $Global:InitialHash = ""
 $Script:IsDirty = $false
 $Script:IsLoading = $false
-$WindowTitle = "AutoTask 控制台 V8.6"
+$WindowTitle = "AutoTask 控制台 V8.7"
 
 # 字型
 $MainFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10)
@@ -294,8 +294,21 @@ $TabResin=New-Object System.Windows.Forms.TabPage;$TabResin.Text="🧪 樹脂策
 
 # === 分頁 5: 工具與維護 ===
 $TabTools=New-Object System.Windows.Forms.TabPage;$TabTools.Text="[TOOL] 工具與維護";$flpTools=New-Object System.Windows.Forms.FlowLayoutPanel;$flpTools.Dock="Fill";$flpTools.FlowDirection="TopDown";$flpTools.Padding="20";$flpTools.AutoSize=$true;function Add-ToolBtn($t,$c,$a){$b=New-Object System.Windows.Forms.Button;$b.Text=$t;$b.Width=400;$b.Height=50;$b.BackColor=$c;$b.Font=$BoldFont;$b.Margin="0,0,0,15";$b.Add_Click($a);$flpTools.Controls.Add($b)};$lblPath=New-Object System.Windows.Forms.Label;$lblPath.AutoSize=$true;$lblPath.Font=$MainFont;$lblPath.ForeColor="Gray";$flpTools.Controls.Add($lblPath);function Update-PathLabel{$p="尚未設定";if($Global:GenshinPath){$p=$Global:GenshinPath};$lblPath.Text="目前遊戲路徑: $p"};Add-ToolBtn "📂 設定原神遊戲路徑" "LightYellow" {$f=Auto-Detect-GenshinPath;$u=$false;if($f){if([System.Windows.Forms.MessageBox]::Show("找到路徑:\n$f\n使用?","偵測","YesNo")-eq"Yes"){$Global:GenshinPath=$f;$u=$true}};if(-not$u){$d=New-Object System.Windows.Forms.FolderBrowserDialog;if($d.ShowDialog()-eq"OK"){$Global:GenshinPath=$d.SelectedPath;$u=$true}};if($u){$e=@{GenshinPath=$Global:GenshinPath};$e|ConvertTo-Json|Set-Content "$ConfigsDir\EnvConfig.json";Update-PathLabel}};Add-ToolBtn "[COPY] 複製配置" "LightBlue" {$s=Show-ConfigSelectorGUI "";if($s){$s=($s-split",")[0];$n=[Microsoft.VisualBasic.Interaction]::InputBox("新名稱:","複製","$s-Copy");if($n){$src=Join-Path $BetterGI_UserDir "$s.json";$dst=Join-Path $BetterGI_UserDir "$n.json";if(Test-Path $src){Copy-Item $src $dst -Force;$j=Get-Content $dst -Raw|ConvertFrom-Json;$j.Name=$n;$j|ConvertTo-Json|Set-Content $dst;Load-BetterGIConfigs}}}};Add-ToolBtn "[SYNC] 同步配置名稱" "LightBlue" {$r=[System.Windows.Forms.MessageBox]::Show("修正內部 Name?","確認","YesNo");if($r-eq"Yes"){if(Test-Path $BetterGI_UserDir){Get-ChildItem "$BetterGI_UserDir\*.json"|ForEach{try{$j=Get-Content $_.FullName -Raw|ConvertFrom-Json;if($j.Name-ne$_.BaseName){$j.Name=$_.BaseName;$j|ConvertTo-Json|Set-Content $_.FullName}}catch{}}};Load-BetterGIConfigs}};Add-ToolBtn "[STOP] 強制停止" "LightCoral" {if([System.Windows.Forms.MessageBox]::Show("停止?","警","YesNo")-eq"Yes"){Start-Process powershell -Arg "-File `"$StopScript`"" -Verb RunAs}};Add-ToolBtn "[FIX] 修復權限" "LightBlue" {Start-Process powershell -Arg "-Command `"takeown /F '$Dir' /R /D Y; icacls '$Dir' /grant Everyone:(OI)(CI)F /T /C`"" -Verb RunAs};
-# [新增] 系統快照按鈕
-Add-ToolBtn "[SNAP] 建立系統快照 (備份)" "LightGoldenrodYellow" { if(Test-Path $SnapshotScript){ Start-Process powershell -Arg "-NoProfile -ExecutionPolicy Bypass -File `"$SnapshotScript`"" -Verb RunAs }else{ [System.Windows.Forms.MessageBox]::Show("找不到腳本: $SnapshotScript") } }; 
+
+# [修正] 系統快照按鈕 (增加錯誤捕捉與路徑檢查)
+Add-ToolBtn "[SNAP] 建立系統快照 (備份)" "LightGoldenrodYellow" { 
+    $TargetScript = "C:\AutoTask\Scripts\Get-AutoTaskSnapshot.ps1"
+    if (Test-Path $TargetScript) { 
+        try {
+            Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$TargetScript`"" -Verb RunAs -ErrorAction Stop
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("啟動快照腳本失敗:`n$($_.Exception.Message)", "錯誤", "OK", "Error")
+        }
+    } else { 
+        [System.Windows.Forms.MessageBox]::Show("找不到腳本:`n$TargetScript") 
+    } 
+};
+
 Add-ToolBtn "[GIT] 發布至 GitHub" "LightGray" {Start-Process powershell -Arg "-File `"$PublishScript`""};$TabTools.Controls.Add($flpTools)
 
 # === 分頁 6: 日誌檢視 ===
