@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Payload V5.21 - ForceRun 邏輯修正與診斷增強
+# AutoTask Payload V5.22 - 通知增強版 (啟動/中途報錯)
 # =============================================================================
 $ErrorActionPreference = "Stop"
 trap {
@@ -69,12 +69,12 @@ function Write-Log {
 }
 
 # --- [1. 啟動前安全檢查] ---
-Write-Log "Payload 啟動 (V5.21) PID: $PID..." "Cyan"
+Write-Log "Payload 啟動 (V5.22) PID: $PID..." "Cyan"
 
 try {
     $CurrentPID = $PID
     $TargetScript = "Payload.ps1"
-    $OldInstances = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | 
+    $OldInstances = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -like "*$TargetScript*" -and $_.ProcessId -ne $CurrentPID }
     if ($OldInstances) {
         foreach ($proc in $OldInstances) { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue }
@@ -98,8 +98,7 @@ if (Test-Path $EnvConf) {
 function Get-Error-Diagnosis { param($e,$p); $r="未知";$f="All Log"; switch($e){"LogLockFail"{$r="BGI啟動超時";$f="Payload.log"} "ProcessCrash"{$r="BGI閃退";$f="bg.log,pl.log"} "HeartbeatTimeout"{$r="卡死";$f="bg.log"} "NetworkError"{$r="斷網";$f="pl.log"}}; return @{Reason=$r;Files=$f;LogPath=$p} }
 function Send-Notify-With-Diagnosis { 
     param($t,$m,$c,$d); 
-    $f=@{"Err"=$d.Reason;"File"=$d.Files;"Bak"=$m}; 
-    $targetLog = if($d.LogPath){$d.LogPath.FullName}else{""}
+    $f=@{"Err"=$d.Reason;"File"=$d.Files;"Bak"=$m}; $targetLog = if($d.LogPath){$d.LogPath.FullName}else{""}
     if(Test-Path $NotifyScript){
         try{
             & $NotifyScript -Title $t -Message "Error: $($d.Reason)" -Color $c -Fields $f -LogPath $targetLog -Mention $true
@@ -160,13 +159,11 @@ if ($CurrentTime.Hour -eq 3) {
 Write-Log "日期: $CurrentDateStr"
 Cleanup-Screenshots
 
-# --- [修正: ForceRun 標記檢查] ---
-# 改動: 讀取標記，但不立即刪除，以防腳本崩潰後重啟無法識別
+# ForceRun 標記檢查
 $IsForceRun = $false
 if (Test-Path $ForceRunFlag) { 
     Write-Log "偵測到 ForceRun (保留標記以支援救援重啟)" "Magenta"
     $IsForceRun = $true 
-    # Remove-Item $ForceRunFlag -Force # 移除此行
 }
 
 if (-not $IsForceRun) {
@@ -218,6 +215,9 @@ if (-not (Test-Path $BettergiExe)) {
 Check-Network
 if (-not (Check-Network)) { $ErrorType = "NetworkError" }
 
+# [新增] 啟動通知
+Send-Notify "任務啟動" "偵測配置: $ConfigName `nPID: $PID" "Blue"
+
 while ($RetryCount -le $MaxRetries) {
     
     Update-Status "Running" $RetryCount
@@ -267,20 +267,9 @@ while ($RetryCount -le $MaxRetries) {
             Write-Log "錯誤：日誌鎖定失敗！" "Red"
             $IsFailed = $true 
             $ErrorType = "LogLockFail"
-            Write-Log "--- [診斷資訊: 檔案列表] ---" "Gray"
-            try {
-                $DebugFiles = Get-ChildItem $LogDirBG -Filter "better-genshin-impact*.log"
-                if ($DebugFiles) {
-                    foreach ($f in $DebugFiles) {
-                        $TimeDiff = ((Get-Date) - $f.LastWriteTime).TotalMinutes
-                        Write-Log "發現檔案: $($f.Name) | 時間: $($f.LastWriteTime.ToString('HH:mm:ss')) | 距今: $([math]::Round($TimeDiff, 1)) 分" "Gray"
-                    }
-                } else {
-                    Write-Log "目錄內無任何符合 'better-genshin-impact*.log' 的檔案。" "Yellow"
-                }
-            } catch {
-                Write-Log "無法讀取目錄: $_" "Red"
-            }
+            # 診斷日誌列表輸出省略...
+            Write-Log "--- [診斷資訊: 目錄掃描] ---" "Gray"
+            try { Get-ChildItem $LogDirBG -Filter "better-genshin-impact*.log" | Select Name, LastWriteTime | Out-String | Write-Host } catch {}
             Write-Log "----------------------------" "Gray"
         } else {
             $LogPath = $LogFile.FullName
@@ -329,7 +318,12 @@ while ($RetryCount -le $MaxRetries) {
         }
 
         if ($ConfigChanged -or $SkipStart) { Restore-BetterGIConfig }
-        if (-not $IsSuccess) { $AllConfigSuccess = $false; break }
+        if (-not $IsSuccess) { 
+            # [新增] 具體錯誤通知
+            $ErrDetail = if($ErrorType){$ErrorType}else{"CheckLog"}
+            Send-Notify "執行異常" "設定 [$CurrentConfig] 失敗。`n原因: $ErrDetail" "Yellow"
+            $AllConfigSuccess = $false; break 
+        }
         Start-Sleep 5
     }
 
@@ -348,7 +342,6 @@ while ($RetryCount -le $MaxRetries) {
         while (Get-Process "GenshinImpact" -ErrorAction SilentlyContinue) { Stop-Process -Name "GenshinImpact" -Force; Start-Sleep 5 }
         New-Item $DoneFlag -Force | Out-Null
         
-        # [修正] 任務成功後才清除 ForceRun 標記
         if ($IsForceRun) { 
             Remove-Item $ForceRunFlag -Force -ErrorAction SilentlyContinue
             Write-Log "任務成功，清理 ForceRun 標記。" "Gray"
@@ -358,6 +351,10 @@ while ($RetryCount -le $MaxRetries) {
         logoff
         exit
     } else {
+        # [新增] 中途報錯通知 (準備重試)
+        $CurrentErr = if($ErrorType){$ErrorType}else{"未知錯誤"}
+        Send-Notify "任務重試 ($($RetryCount+1)/$MaxRetries)" "偵測到異常，準備重試。`n原因: $CurrentErr" "Yellow"
+
         $RetryCount++
         if ($RetryCount -gt $MaxRetries) {
             $BackupPath = Backup-Logs
@@ -366,7 +363,6 @@ while ($RetryCount -le $MaxRetries) {
             Update-Status "Failed" $RetryCount
             New-Item $FailFlag -Force | Out-Null
             
-            # [修正] 任務最終失敗後清除標記，避免無限循環
             if ($IsForceRun) { 
                 Remove-Item $ForceRunFlag -Force -ErrorAction SilentlyContinue
                 Write-Log "任務失敗 (達最大重試)，清理 ForceRun 標記。" "Gray"
