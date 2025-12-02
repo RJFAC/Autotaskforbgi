@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Dashboard V8.7 - 按鈕修復版
+# AutoTask Dashboard V8.8 - 排程編輯器樣式修復版
 # =============================================================================
 
 # --- [隱藏 Console 黑窗] ---
@@ -45,7 +45,7 @@ $Global:ResinData = @{}
 $Global:InitialHash = ""
 $Script:IsDirty = $false
 $Script:IsLoading = $false
-$WindowTitle = "AutoTask 控制台 V8.7"
+$WindowTitle = "AutoTask 控制台 V8.8"
 
 # 字型
 $MainFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10)
@@ -55,8 +55,7 @@ $MonoFont = New-Object System.Drawing.Font("Consolas", 10)
 
 function Get-CurrentScriptsHash {
     $str = ""
-    Get-ChildItem $ScriptDir -Include "*.ps1", "*.bat" -Recurse |
-        Sort-Object Name | ForEach-Object { 
+    Get-ChildItem $ScriptDir -Include "*.ps1", "*.bat" -Recurse | Sort-Object Name | ForEach-Object { 
         $str += (Get-FileHash $_.FullName).Hash 
     }
     return $str
@@ -256,12 +255,66 @@ function Update-StatusUI {
 }
 
 # === 分頁 2: 排程網格 ===
-$TabGrid = New-Object System.Windows.Forms.TabPage; $TabGrid.Text = "[GRID] 排程編輯器"; $pTool = New-Object System.Windows.Forms.Panel; $pTool.Dock="Top"; $pTool.Height=40; $btnGSave = New-Object System.Windows.Forms.Button; $btnGSave.Text="[SAVE]"; $btnGSave.Dock="Left"; $btnGSave.Width=100; $btnGSave.BackColor="LightGreen"; $btnGSave.Font=$BoldFont; $btnGSave.Add_Click({ Save-GridData }); $lblHint = New-Object System.Windows.Forms.Label; $lblHint.Text="操作提示: 支援批量勾選 [不關機] (Ctrl/Shift) | 雙擊配置欄排序 | Ctrl+C/V | Del"; $lblHint.Dock="Fill"; $lblHint.TextAlign="MiddleLeft"; $lblHint.Padding="10,0,0,0"; $lblHint.Font=$MainFont; $pTool.Controls.Add($lblHint); $pTool.Controls.Add($btnGSave)
+$TabGrid = New-Object System.Windows.Forms.TabPage; $TabGrid.Text = "[GRID] 排程編輯器"; $pTool = New-Object System.Windows.Forms.Panel; $pTool.Dock="Top"; $pTool.Height=40; $btnGSave = New-Object System.Windows.Forms.Button; $btnGSave.Text="[SAVE]"; $btnGSave.Dock="Left"; $btnGSave.Width=100; $btnGSave.BackColor="LightGreen"; $btnGSave.Font=$BoldFont; $btnGSave.Add_Click({ Save-GridData }); $lblHint = New-Object System.Windows.Forms.Label; $lblHint.Text="操作提示: 支援批量勾選 [不關機] (Ctrl/Shift) | 雙擊配置欄排序 | Ctrl+C/V | Del (回歸預設/清除暫停)"; $lblHint.Dock="Fill"; $lblHint.TextAlign="MiddleLeft"; $lblHint.Padding="10,0,0,0"; $lblHint.Font=$MainFont; $pTool.Controls.Add($lblHint); $pTool.Controls.Add($btnGSave)
 $grid = New-Object System.Windows.Forms.DataGridView; $grid.Dock="Fill"; $grid.EditMode="EditProgrammatically"; $grid.Font=$MonoFont; $grid.MultiSelect=$true
 $grid.Columns.Add("Date","日期"); $grid.Columns[0].ReadOnly=$true; $grid.Columns[0].Width=120; $grid.Columns.Add("Week","星期"); $grid.Columns[1].ReadOnly=$true; $grid.Columns[1].Width=60; $grid.Columns.Add("Def","每週預設"); $grid.Columns[2].ReadOnly=$true; $grid.Columns[2].Width=100; $grid.Columns.Add("Conf","執行配置 (雙擊)"); $grid.Columns[3].Width=250; $grid.Columns.Add("Shut","不關機"); $grid.Columns[4].Width=60; $grid.Columns[4].CellTemplate=New-Object System.Windows.Forms.DataGridViewCheckBoxCell; $grid.Columns.Add("Note","備註"); $grid.Columns[5].ReadOnly=$true; $grid.Columns[5].Width=150
 $grid.Add_CellClick({ param($s,$e); if($e.RowIndex-lt 0){return}; if($e.ColumnIndex-eq 4){ $c=$grid.Rows[$e.RowIndex].Cells[4]; $v=-not [bool]$c.Value; $sel=$grid.SelectedCells|Where{$_.ColumnIndex-eq 4}; if($sel.Count-gt 0 -and ($sel|Where{$_.RowIndex-eq $e.RowIndex})){foreach($x in $sel){$x.Value=$v}}else{$c.Value=$v}; Mark-Dirty } })
-$grid.Add_CellDoubleClick({ param($s,$e); if($e.RowIndex-lt 0-or $e.ColumnIndex-ne 3){return}; $c=$grid.Rows[$e.RowIndex].Cells[3]; $cv=$c.Value; if($cv-eq $grid.Rows[$e.RowIndex].Cells[2].Value-or $cv-eq "PAUSE"){$cv=""}; $n=Show-ConfigSelectorGUI $cv; if($n-ne $null){if($n-eq""){$c.Value=$grid.Rows[$e.RowIndex].Cells[2].Value;$c.Style=$grid.DefaultCellStyle}else{$c.Value=$n;$c.Style.ForeColor="Blue";$c.Style.Font=$BoldFont};Mark-Dirty} })
-$grid.Add_KeyDown({ param($s,$e); if($e.KeyCode-eq "Delete"){foreach($c in $grid.SelectedCells){if($c.ColumnIndex-eq 3){$def=$grid.Rows[$c.RowIndex].Cells[2].Value;$c.Value=$def;$c.Style=$grid.DefaultCellStyle;Mark-Dirty}}}; if($e.Control-and $e.KeyCode-eq "V"){$t=[Windows.Forms.Clipboard]::GetText().Trim();if($t){foreach($c in $grid.SelectedCells){if($c.ColumnIndex-eq 3){$c.Value=$t;if($t-eq"PAUSE"){$c.Style.BackColor="LightCoral";$c.Style.ForeColor="White"}else{$c.Style.ForeColor="Blue";$c.Style.Font=$BoldFont;$c.Style.BackColor="White"};Mark-Dirty}}}} })
+
+# [修正] 雙擊編輯事件：選取非 PAUSE 項目時，強制清除背景顏色
+$grid.Add_CellDoubleClick({ param($s,$e); 
+    if($e.RowIndex-lt 0-or $e.ColumnIndex-ne 3){return}; 
+    $c=$grid.Rows[$e.RowIndex].Cells[3]; 
+    $cv=$c.Value; 
+    if($cv-eq $grid.Rows[$e.RowIndex].Cells[2].Value-or $cv-eq "PAUSE"){$cv=""}; 
+    $n=Show-ConfigSelectorGUI $cv; 
+    if($n-ne $null){
+        if($n-eq""){
+            # 如果清空，恢復預設值
+            $c.Value=$grid.Rows[$e.RowIndex].Cells[2].Value;
+            $c.Style.BackColor="White"; $c.Style.ForeColor="Black"; $c.Style.Font=$MonoFont
+        }else{
+            # 設定新值
+            $c.Value=$n; 
+            $c.Style.ForeColor="Blue"; $c.Style.Font=$BoldFont; 
+            $c.Style.BackColor="White" # <--- 強制清除 PAUSE 的紅色背景
+        }
+        Mark-Dirty
+    } 
+})
+
+# [修正] 按鍵事件：Delete 時強制清除背景顏色
+$grid.Add_KeyDown({ param($s,$e); 
+    if($e.KeyCode-eq "Delete"){
+        foreach($c in $grid.SelectedCells){
+            if($c.ColumnIndex-eq 3){
+                $def=$grid.Rows[$c.RowIndex].Cells[2].Value;
+                $c.Value=$def;
+                # 強制重置樣式，確保清除 PAUSE 的紅色
+                $c.Style.BackColor = "White"
+                $c.Style.ForeColor = "Black"
+                $c.Style.Font = $MonoFont
+                Mark-Dirty
+            }
+        }
+    };
+    if($e.Control-and $e.KeyCode-eq "V"){
+        $t=[Windows.Forms.Clipboard]::GetText().Trim();
+        if($t){
+            foreach($c in $grid.SelectedCells){
+                if($c.ColumnIndex-eq 3){
+                    $c.Value=$t;
+                    if($t-eq"PAUSE"){
+                        $c.Style.BackColor="LightCoral";$c.Style.ForeColor="White"
+                    }else{
+                        $c.Style.ForeColor="Blue";$c.Style.Font=$BoldFont;$c.Style.BackColor="White"
+                    }
+                    Mark-Dirty
+                }
+            }
+        }
+    } 
+})
+
 function Load-GridData { $Script:IsLoading=$true; $grid.Rows.Clear(); $MapData=@{}; if(Test-Path $DateMap){Get-Content $DateMap|ForEach{if($_-match"^(\d{8})=(.+)$"){$MapData[$matches[1]]=$matches[2]}}}; $PauseData=@(); if(Test-Path $PauseLog){$PauseData=Get-Content $PauseLog}; $NoShutData=@(); if(Test-Path $NoShutdownLog){$NoShutData=Get-Content $NoShutdownLog}; $Start=(Get-Date).AddHours(-4).Date; for($i=0;$i-lt 90;$i++){ $d=$Start.AddDays($i); $dS=$d.ToString("yyyyMMdd"); $wS=$d.DayOfWeek.ToString(); $def=$Global:WeeklyRules[$wS]; $ITDay=Test-TurbulencePeriod $d; if($ITDay-gt 0){$tConf=$Global:TurbulenceRules[$wS];if($tConf){$def="$tConf"}}; $cur=$def; $isO=$false; $isP=$false; if($PauseData-contains $dS){$cur="PAUSE";$isP=$true}elseif($MapData.ContainsKey($dS)){$cur=$MapData[$dS];$isO=$true}; $isS=$NoShutData-contains $dS; if(Test-TurbulencePeriod $d){if($Global:TurbulenceNoShut[$wS]){$isS=$true}}else{if($Global:WeeklyNoShut[$wS]){$isS=$true}}; $note=""; if(Test-GenshinUpdateDay $d){$note="⚠️ 版本更新"}; if($ITDay-gt 0){$note+=" 🔥 紊亂(Day$ITDay)"}; $idx=$grid.Rows.Add($d.ToString("yyyy/MM/dd"),$wS,$def,$cur,$isS,$note); $row=$grid.Rows[$idx]; $row.Tag=$dS; if($isP){$row.Cells[3].Style.BackColor="LightCoral";$row.Cells[3].Style.ForeColor="White"}elseif($isO){$row.Cells[3].Style.ForeColor="Blue";$row.Cells[3].Style.Font=$BoldFont}; if($note){$row.Cells[5].Style.ForeColor="Magenta";$row.Cells[5].Style.Font=$BoldFont} }; $Script:IsLoading=$false; Mark-Clean }
 function Save-GridData { $newMap=@(); $newP=@(); $newS=@(); foreach($r in $grid.Rows){ $k=$r.Tag; $def=$r.Cells[2].Value; $cur=$r.Cells[3].Value; $shut=$r.Cells[4].Value; if($cur-eq"PAUSE"){$newP+=$k}elseif($cur-ne$def){$newMap+="$k=$cur"}; $dObj=[DateTime]::ParseExact($k,"yyyyMMdd",$null); $wS=$dObj.DayOfWeek.ToString(); $defShut=$false; if(Test-TurbulencePeriod $dObj){if($Global:TurbulenceNoShut[$wS]){$defShut=$true}}else{if($Global:WeeklyNoShut[$wS]){$defShut=$true}}; if($shut-and-not$defShut){$newS+=$k} }; $newMap|Sort|Set-Content $DateMap -Enc UTF8; $newP|Sort|Set-Content $PauseLog -Enc UTF8; $newS|Sort|Set-Content $NoShutdownLog -Enc UTF8; Mark-Clean; [System.Windows.Forms.MessageBox]::Show("設定已儲存！"); Load-GridData; Init-WeeklyTab }
 $TabGrid.Controls.Add($grid); $TabGrid.Controls.Add($pTool)
@@ -294,21 +347,12 @@ $TabResin=New-Object System.Windows.Forms.TabPage;$TabResin.Text="🧪 樹脂策
 
 # === 分頁 5: 工具與維護 ===
 $TabTools=New-Object System.Windows.Forms.TabPage;$TabTools.Text="[TOOL] 工具與維護";$flpTools=New-Object System.Windows.Forms.FlowLayoutPanel;$flpTools.Dock="Fill";$flpTools.FlowDirection="TopDown";$flpTools.Padding="20";$flpTools.AutoSize=$true;function Add-ToolBtn($t,$c,$a){$b=New-Object System.Windows.Forms.Button;$b.Text=$t;$b.Width=400;$b.Height=50;$b.BackColor=$c;$b.Font=$BoldFont;$b.Margin="0,0,0,15";$b.Add_Click($a);$flpTools.Controls.Add($b)};$lblPath=New-Object System.Windows.Forms.Label;$lblPath.AutoSize=$true;$lblPath.Font=$MainFont;$lblPath.ForeColor="Gray";$flpTools.Controls.Add($lblPath);function Update-PathLabel{$p="尚未設定";if($Global:GenshinPath){$p=$Global:GenshinPath};$lblPath.Text="目前遊戲路徑: $p"};Add-ToolBtn "📂 設定原神遊戲路徑" "LightYellow" {$f=Auto-Detect-GenshinPath;$u=$false;if($f){if([System.Windows.Forms.MessageBox]::Show("找到路徑:\n$f\n使用?","偵測","YesNo")-eq"Yes"){$Global:GenshinPath=$f;$u=$true}};if(-not$u){$d=New-Object System.Windows.Forms.FolderBrowserDialog;if($d.ShowDialog()-eq"OK"){$Global:GenshinPath=$d.SelectedPath;$u=$true}};if($u){$e=@{GenshinPath=$Global:GenshinPath};$e|ConvertTo-Json|Set-Content "$ConfigsDir\EnvConfig.json";Update-PathLabel}};Add-ToolBtn "[COPY] 複製配置" "LightBlue" {$s=Show-ConfigSelectorGUI "";if($s){$s=($s-split",")[0];$n=[Microsoft.VisualBasic.Interaction]::InputBox("新名稱:","複製","$s-Copy");if($n){$src=Join-Path $BetterGI_UserDir "$s.json";$dst=Join-Path $BetterGI_UserDir "$n.json";if(Test-Path $src){Copy-Item $src $dst -Force;$j=Get-Content $dst -Raw|ConvertFrom-Json;$j.Name=$n;$j|ConvertTo-Json|Set-Content $dst;Load-BetterGIConfigs}}}};Add-ToolBtn "[SYNC] 同步配置名稱" "LightBlue" {$r=[System.Windows.Forms.MessageBox]::Show("修正內部 Name?","確認","YesNo");if($r-eq"Yes"){if(Test-Path $BetterGI_UserDir){Get-ChildItem "$BetterGI_UserDir\*.json"|ForEach{try{$j=Get-Content $_.FullName -Raw|ConvertFrom-Json;if($j.Name-ne$_.BaseName){$j.Name=$_.BaseName;$j|ConvertTo-Json|Set-Content $_.FullName}}catch{}}};Load-BetterGIConfigs}};Add-ToolBtn "[STOP] 強制停止" "LightCoral" {if([System.Windows.Forms.MessageBox]::Show("停止?","警","YesNo")-eq"Yes"){Start-Process powershell -Arg "-File `"$StopScript`"" -Verb RunAs}};Add-ToolBtn "[FIX] 修復權限" "LightBlue" {Start-Process powershell -Arg "-Command `"takeown /F '$Dir' /R /D Y; icacls '$Dir' /grant Everyone:(OI)(CI)F /T /C`"" -Verb RunAs};
-
-# [修正] 系統快照按鈕 (增加錯誤捕捉與路徑檢查)
 Add-ToolBtn "[SNAP] 建立系統快照 (備份)" "LightGoldenrodYellow" { 
     $TargetScript = "C:\AutoTask\Scripts\Get-AutoTaskSnapshot.ps1"
     if (Test-Path $TargetScript) { 
-        try {
-            Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$TargetScript`"" -Verb RunAs -ErrorAction Stop
-        } catch {
-            [System.Windows.Forms.MessageBox]::Show("啟動快照腳本失敗:`n$($_.Exception.Message)", "錯誤", "OK", "Error")
-        }
-    } else { 
-        [System.Windows.Forms.MessageBox]::Show("找不到腳本:`n$TargetScript") 
-    } 
+        try { Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$TargetScript`"" -Verb RunAs -ErrorAction Stop } catch { [System.Windows.Forms.MessageBox]::Show("啟動快照腳本失敗:`n$($_.Exception.Message)", "錯誤", "OK", "Error") }
+    } else { [System.Windows.Forms.MessageBox]::Show("找不到腳本:`n$TargetScript") } 
 };
-
 Add-ToolBtn "[GIT] 發布至 GitHub" "LightGray" {Start-Process powershell -Arg "-File `"$PublishScript`""};$TabTools.Controls.Add($flpTools)
 
 # === 分頁 6: 日誌檢視 ===
