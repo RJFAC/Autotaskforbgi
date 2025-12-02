@@ -1,5 +1,5 @@
 ﻿# =============================================================================
-# AutoTask Monitor V3.7 - TCP 狀態監控/診斷增強版
+# AutoTask Monitor V3.8 - TCP 狀態監控/診斷增強/容錯強化版
 # =============================================================================
 
 # --- [定義路徑] ---
@@ -38,7 +38,7 @@ function Write-Log {
 # 清理舊日誌
 try { Get-ChildItem -Path $LogDir -Filter "*.log" | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) } | Remove-Item -Force -ErrorAction SilentlyContinue } catch {}
 
-Write-Log "Monitor 啟動 (V3.7 - 診斷增強)..." "Cyan"
+Write-Log "Monitor 啟動 (V3.8 - 容錯強化)..." "Cyan"
 
 # --- [狀態變數] ---
 $CurrentLogFile = $null
@@ -51,10 +51,21 @@ $InitialWriteTime = (Get-Item $SelfPath).LastWriteTime
 $LastNetCheckTime = Get-Date
 
 while ($true) {
-    # 1. 檢查自身存活條件
+    # 1. 檢查自身存活條件 (新增防抖動容錯機制)
     if (-not (Test-Path $RunFlag)) {
-        Write-Log "Run.flag 已消失，Monitor 正常停止。" "Gray"
-        break
+        # 第一次偵測到消失，等待緩衝
+        Start-Sleep 2
+        if (-not (Test-Path $RunFlag)) {
+            # 第二次確認
+            Start-Sleep 2
+            if (-not (Test-Path $RunFlag)) {
+                # 第三次確認消失，才判定為真正結束
+                Write-Log "Run.flag 確認消失，Monitor 正常停止。" "Gray"
+                break
+            } else {
+                Write-Log "Run.flag 短暫消失後恢復 (忽略抖動)。" "Gray"
+            }
+        }
     }
 
     # 2. 檢查自我更新
