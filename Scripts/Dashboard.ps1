@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Dashboard V8.8 - 排程編輯器樣式修復版
+# AutoTask Dashboard V8.9 - 存檔邏輯修復版
 # =============================================================================
 
 # --- [隱藏 Console 黑窗] ---
@@ -45,7 +45,7 @@ $Global:ResinData = @{}
 $Global:InitialHash = ""
 $Script:IsDirty = $false
 $Script:IsLoading = $false
-$WindowTitle = "AutoTask 控制台 V8.8"
+$WindowTitle = "AutoTask 控制台 V8.9"
 
 # 字型
 $MainFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10)
@@ -260,7 +260,7 @@ $grid = New-Object System.Windows.Forms.DataGridView; $grid.Dock="Fill"; $grid.E
 $grid.Columns.Add("Date","日期"); $grid.Columns[0].ReadOnly=$true; $grid.Columns[0].Width=120; $grid.Columns.Add("Week","星期"); $grid.Columns[1].ReadOnly=$true; $grid.Columns[1].Width=60; $grid.Columns.Add("Def","每週預設"); $grid.Columns[2].ReadOnly=$true; $grid.Columns[2].Width=100; $grid.Columns.Add("Conf","執行配置 (雙擊)"); $grid.Columns[3].Width=250; $grid.Columns.Add("Shut","不關機"); $grid.Columns[4].Width=60; $grid.Columns[4].CellTemplate=New-Object System.Windows.Forms.DataGridViewCheckBoxCell; $grid.Columns.Add("Note","備註"); $grid.Columns[5].ReadOnly=$true; $grid.Columns[5].Width=150
 $grid.Add_CellClick({ param($s,$e); if($e.RowIndex-lt 0){return}; if($e.ColumnIndex-eq 4){ $c=$grid.Rows[$e.RowIndex].Cells[4]; $v=-not [bool]$c.Value; $sel=$grid.SelectedCells|Where{$_.ColumnIndex-eq 4}; if($sel.Count-gt 0 -and ($sel|Where{$_.RowIndex-eq $e.RowIndex})){foreach($x in $sel){$x.Value=$v}}else{$c.Value=$v}; Mark-Dirty } })
 
-# [修正] 雙擊編輯事件：選取非 PAUSE 項目時，強制清除背景顏色
+# [UI修正] 雙擊編輯事件：選取非 PAUSE 項目時，強制清除背景顏色
 $grid.Add_CellDoubleClick({ param($s,$e); 
     if($e.RowIndex-lt 0-or $e.ColumnIndex-ne 3){return}; 
     $c=$grid.Rows[$e.RowIndex].Cells[3]; 
@@ -269,28 +269,25 @@ $grid.Add_CellDoubleClick({ param($s,$e);
     $n=Show-ConfigSelectorGUI $cv; 
     if($n-ne $null){
         if($n-eq""){
-            # 如果清空，恢復預設值
             $c.Value=$grid.Rows[$e.RowIndex].Cells[2].Value;
             $c.Style.BackColor="White"; $c.Style.ForeColor="Black"; $c.Style.Font=$MonoFont
         }else{
-            # 設定新值
             $c.Value=$n; 
             $c.Style.ForeColor="Blue"; $c.Style.Font=$BoldFont; 
-            $c.Style.BackColor="White" # <--- 強制清除 PAUSE 的紅色背景
+            $c.Style.BackColor="White" # 清除 PAUSE 背景
         }
         Mark-Dirty
     } 
 })
 
-# [修正] 按鍵事件：Delete 時強制清除背景顏色
+# [UI修正] 按鍵事件：Delete 時強制清除背景顏色
 $grid.Add_KeyDown({ param($s,$e); 
     if($e.KeyCode-eq "Delete"){
         foreach($c in $grid.SelectedCells){
             if($c.ColumnIndex-eq 3){
                 $def=$grid.Rows[$c.RowIndex].Cells[2].Value;
                 $c.Value=$def;
-                # 強制重置樣式，確保清除 PAUSE 的紅色
-                $c.Style.BackColor = "White"
+                $c.Style.BackColor = "White" # 清除 PAUSE 背景
                 $c.Style.ForeColor = "Black"
                 $c.Style.Font = $MonoFont
                 Mark-Dirty
@@ -316,7 +313,28 @@ $grid.Add_KeyDown({ param($s,$e);
 })
 
 function Load-GridData { $Script:IsLoading=$true; $grid.Rows.Clear(); $MapData=@{}; if(Test-Path $DateMap){Get-Content $DateMap|ForEach{if($_-match"^(\d{8})=(.+)$"){$MapData[$matches[1]]=$matches[2]}}}; $PauseData=@(); if(Test-Path $PauseLog){$PauseData=Get-Content $PauseLog}; $NoShutData=@(); if(Test-Path $NoShutdownLog){$NoShutData=Get-Content $NoShutdownLog}; $Start=(Get-Date).AddHours(-4).Date; for($i=0;$i-lt 90;$i++){ $d=$Start.AddDays($i); $dS=$d.ToString("yyyyMMdd"); $wS=$d.DayOfWeek.ToString(); $def=$Global:WeeklyRules[$wS]; $ITDay=Test-TurbulencePeriod $d; if($ITDay-gt 0){$tConf=$Global:TurbulenceRules[$wS];if($tConf){$def="$tConf"}}; $cur=$def; $isO=$false; $isP=$false; if($PauseData-contains $dS){$cur="PAUSE";$isP=$true}elseif($MapData.ContainsKey($dS)){$cur=$MapData[$dS];$isO=$true}; $isS=$NoShutData-contains $dS; if(Test-TurbulencePeriod $d){if($Global:TurbulenceNoShut[$wS]){$isS=$true}}else{if($Global:WeeklyNoShut[$wS]){$isS=$true}}; $note=""; if(Test-GenshinUpdateDay $d){$note="⚠️ 版本更新"}; if($ITDay-gt 0){$note+=" 🔥 紊亂(Day$ITDay)"}; $idx=$grid.Rows.Add($d.ToString("yyyy/MM/dd"),$wS,$def,$cur,$isS,$note); $row=$grid.Rows[$idx]; $row.Tag=$dS; if($isP){$row.Cells[3].Style.BackColor="LightCoral";$row.Cells[3].Style.ForeColor="White"}elseif($isO){$row.Cells[3].Style.ForeColor="Blue";$row.Cells[3].Style.Font=$BoldFont}; if($note){$row.Cells[5].Style.ForeColor="Magenta";$row.Cells[5].Style.Font=$BoldFont} }; $Script:IsLoading=$false; Mark-Clean }
-function Save-GridData { $newMap=@(); $newP=@(); $newS=@(); foreach($r in $grid.Rows){ $k=$r.Tag; $def=$r.Cells[2].Value; $cur=$r.Cells[3].Value; $shut=$r.Cells[4].Value; if($cur-eq"PAUSE"){$newP+=$k}elseif($cur-ne$def){$newMap+="$k=$cur"}; $dObj=[DateTime]::ParseExact($k,"yyyyMMdd",$null); $wS=$dObj.DayOfWeek.ToString(); $defShut=$false; if(Test-TurbulencePeriod $dObj){if($Global:TurbulenceNoShut[$wS]){$defShut=$true}}else{if($Global:WeeklyNoShut[$wS]){$defShut=$true}}; if($shut-and-not$defShut){$newS+=$k} }; $newMap|Sort|Set-Content $DateMap -Enc UTF8; $newP|Sort|Set-Content $PauseLog -Enc UTF8; $newS|Sort|Set-Content $NoShutdownLog -Enc UTF8; Mark-Clean; [System.Windows.Forms.MessageBox]::Show("設定已儲存！"); Load-GridData; Init-WeeklyTab }
+
+# [邏輯修正] Save-GridData 避免管線輸入為空時 Set-Content 不執行的問題
+function Save-GridData { 
+    $newMap=@(); $newP=@(); $newS=@(); 
+    foreach($r in $grid.Rows){ 
+        $k=$r.Tag; $def=$r.Cells[2].Value; $cur=$r.Cells[3].Value; $shut=$r.Cells[4].Value; 
+        if($cur-eq"PAUSE"){$newP+=$k}elseif($cur-ne$def){$newMap+="$k=$cur"}; 
+        $dObj=[DateTime]::ParseExact($k,"yyyyMMdd",$null); $wS=$dObj.DayOfWeek.ToString(); $defShut=$false; 
+        if(Test-TurbulencePeriod $dObj){if($Global:TurbulenceNoShut[$wS]){$defShut=$true}}else{if($Global:WeeklyNoShut[$wS]){$defShut=$true}}; 
+        if($shut-and-not$defShut){$newS+=$k} 
+    }; 
+    # 強制覆蓋檔案，即使陣列為空 (使用 New-Item 建立空檔)
+    if ($newMap.Count -gt 0) { $newMap | Sort-Object | Set-Content $DateMap -Encoding UTF8 } else { New-Item $DateMap -ItemType File -Force | Out-Null }
+    if ($newP.Count -gt 0)   { $newP   | Sort-Object | Set-Content $PauseLog -Encoding UTF8 } else { New-Item $PauseLog -ItemType File -Force | Out-Null }
+    if ($newS.Count -gt 0)   { $newS   | Sort-Object | Set-Content $NoShutdownLog -Encoding UTF8 } else { New-Item $NoShutdownLog -ItemType File -Force | Out-Null }
+    
+    Mark-Clean; 
+    [System.Windows.Forms.MessageBox]::Show("設定已儲存！"); 
+    Load-GridData; 
+    Init-WeeklyTab 
+}
+
 $TabGrid.Controls.Add($grid); $TabGrid.Controls.Add($pTool)
 
 # === 分頁 3: 每週配置 ===
