@@ -1,6 +1,7 @@
 # =======================================================
 # 檔案名稱: Lib_Discord.ps1
 # 功能: Discord 通知模組 (Embed 支援)
+# 版本: v2.1 (修復 DateTime Parse 語法錯誤)
 # =======================================================
 
 function Get-EnvConfig {
@@ -72,19 +73,35 @@ function Send-AutoTaskReport {
     $DurationText = "未知"
 
     if ($LogFile -and (Test-Path $LogFile)) {
+        # 讀取摘要
         $Logs = Get-Content $LogFile -Tail 50 -Encoding UTF8
         $LogSummary = ($Logs | Where-Object { $_ -match "\S" } | Select-Object -Last 5) -join "`n"
         
-        # 計算耗時
+        # 計算耗時 (修正語法錯誤部分)
         try {
             $FullLog = Get-Content $LogFile -Encoding UTF8
             if ($FullLog.Count -ge 2) {
-                $Start = [DateTime]::Parse(($FullLog[0] -match "\[(.*?)\]" | Out-Null; $matches[1]))
-                $End = [DateTime]::Parse(($FullLog[-1] -match "\[(.*?)\]" | Out-Null; $matches[1]))
-                $Duration = $End - $Start
-                $DurationText = "{0:00}:{1:00}:{2:00}" -f $Duration.Hours, $Duration.Minutes, $Duration.Seconds
+                # 步驟 1: 抓取開始時間
+                $Start = $null
+                if ($FullLog[0] -match "\[(.*?)\]") {
+                    $Start = [DateTime]::Parse($matches[1])
+                }
+
+                # 步驟 2: 抓取結束時間
+                $End = $null
+                if ($FullLog[-1] -match "\[(.*?)\]") {
+                    $End = [DateTime]::Parse($matches[1])
+                }
+                
+                # 步驟 3: 計算差值
+                if ($Start -and $End) {
+                    $Duration = $End - $Start
+                    $DurationText = "{0:00}:{1:00}:{2:00}" -f $Duration.Hours, $Duration.Minutes, $Duration.Seconds
+                }
             }
-        } catch {}
+        } catch {
+            $DurationText = "計算錯誤"
+        }
     }
 
     $Fields = [ordered]@{
