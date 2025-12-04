@@ -1,7 +1,7 @@
 # =======================================================
 # 檔案名稱: Lib_Discord.ps1
 # 功能: Discord 通知模組 (Embed 支援)
-# 版本: v2.3 (修復 Here-String 縮排錯誤)
+# 版本: v2.4 (修復 Here-String 縮排與 DateTime 解析)
 # =======================================================
 
 function Get-EnvConfig {
@@ -73,22 +73,24 @@ function Send-AutoTaskReport {
     $DurationText = "未知"
 
     if ($LogFile -and (Test-Path $LogFile)) {
-        # 讀取摘要
+        # 讀取摘要 (取最後 5 行非空內容)
         $Logs = Get-Content $LogFile -Tail 50 -Encoding UTF8
         $LogSummary = ($Logs | Where-Object { $_ -match "\S" } | Select-Object -Last 5) -join "`n"
         
-        # 計算耗時
+        # 計算耗時 (安全解析版)
         try {
             $FullLog = Get-Content $LogFile -Encoding UTF8
             if ($FullLog.Count -ge 2) {
                 $Start = $null
-                if ($FullLog[0] -match "\[(.*?)\]") {
-                    $Start = [DateTime]::Parse($matches[1])
-                }
-
                 $End = $null
-                if ($FullLog[-1] -match "\[(.*?)\]") {
-                    $End = [DateTime]::Parse($matches[1])
+                
+                # 獨立解析避免語法錯誤
+                if ($FullLog[0] -match "\[(.*?)\]") { 
+                    $Start = [DateTime]::Parse($matches[1]) 
+                }
+                
+                if ($FullLog[-1] -match "\[(.*?)\]") { 
+                    $End = [DateTime]::Parse($matches[1]) 
                 }
                 
                 if ($Start -and $End) {
@@ -106,7 +108,12 @@ function Send-AutoTaskReport {
         "📅 時間" = (Get-Date).ToString("MM-dd HH:mm")
     }
 
-    # 這裡的 "@ 必須在最左邊，不能有縮排
+    # [關鍵修正] 使用 Here-String，結尾標記 "@ 必須緊貼最左邊 (Column 0)
     $SafeDescription = @"
 ```text
 $LogSummary
+```
+"@
+
+    Send-DiscordWebhook -WebhookUrl $WebhookUrl -Title $Title -Description $SafeDescription -Color $Color -Fields $Fields
+}
