@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     BetterGI 雙倉庫自動更新與架構提取工具
     

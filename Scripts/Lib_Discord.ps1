@@ -1,8 +1,10 @@
-# =======================================================
+﻿# =======================================================
 # 檔案名稱: Lib_Discord.ps1
-# 功能: Discord 通知模組 (Embed 支援)
-# 版本: v2.4 (修復 Here-String 縮排與 DateTime 解析)
+# 功能: Discord 通知模組 (v2.5 編碼修復版)
 # =======================================================
+
+# 強制設定控制台輸出編碼為 UTF-8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 function Get-EnvConfig {
     param($Key)
@@ -42,14 +44,15 @@ function Send-DiscordWebhook {
                 description = $Description
                 color = $Color
                 fields = $EmbedFields
-                footer = @{ text = "AutoTask | $env:COMPUTERNAME" }
-                timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+                footer = @{ text = "AutoTask | Host: $env:COMPUTERNAME" }
+                timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
             }
         )
     }
 
     try {
-        Invoke-RestMethod -Uri $WebhookUrl -Method Post -ContentType 'application/json' -Body ($Payload | ConvertTo-Json -Depth 10 -Compress)
+        # [關鍵修正] 明確指定 ContentType 為 charset=utf-8
+        Invoke-RestMethod -Uri $WebhookUrl -Method Post -ContentType 'application/json; charset=utf-8' -Body ($Payload | ConvertTo-Json -Depth 10 -Compress)
     } catch {
         Write-Warning "Discord 發送失敗: $_"
     }
@@ -63,35 +66,28 @@ function Send-AutoTaskReport {
 
     if ($Status -eq "Success") {
         $Color = "5763719" # Green
-        $Title = "✅ 任務執行成功"
+        $Title = "✅ AutoTask 任務執行成功"
     } else {
         $Color = "15548997" # Red
-        $Title = "❌ 任務執行失敗"
+        $Title = "❌ AutoTask 任務執行失敗"
     }
 
     $LogSummary = "無日誌"
     $DurationText = "未知"
 
     if ($LogFile -and (Test-Path $LogFile)) {
-        # 讀取摘要 (取最後 5 行非空內容)
+        # 讀取摘要
         $Logs = Get-Content $LogFile -Tail 50 -Encoding UTF8
         $LogSummary = ($Logs | Where-Object { $_ -match "\S" } | Select-Object -Last 5) -join "`n"
         
-        # 計算耗時 (安全解析版)
+        # 計算耗時
         try {
             $FullLog = Get-Content $LogFile -Encoding UTF8
             if ($FullLog.Count -ge 2) {
-                $Start = $null
-                $End = $null
+                $Start = $null; $End = $null
                 
-                # 獨立解析避免語法錯誤
-                if ($FullLog[0] -match "\[(.*?)\]") { 
-                    $Start = [DateTime]::Parse($matches[1]) 
-                }
-                
-                if ($FullLog[-1] -match "\[(.*?)\]") { 
-                    $End = [DateTime]::Parse($matches[1]) 
-                }
+                if ($FullLog[0] -match "\[(.*?)\]") { $Start = [DateTime]::Parse($matches[1]) }
+                if ($FullLog[-1] -match "\[(.*?)\]") { $End = [DateTime]::Parse($matches[1]) }
                 
                 if ($Start -and $End) {
                     $Duration = $End - $Start
@@ -105,15 +101,11 @@ function Send-AutoTaskReport {
 
     $Fields = [ordered]@{
         "⏱️ 耗時" = $DurationText
-        "📅 時間" = (Get-Date).ToString("MM-dd HH:mm")
+        # 使用 24 小時制 (HH) 避免出現上午/下午的中文字元
+        "📅 時間" = (Get-Date).ToString("yyyy/MM/dd HH:mm:ss")
     }
 
-    # [關鍵修正] 使用 Here-String，結尾標記 "@ 必須緊貼最左邊 (Column 0)
-    $SafeDescription = @"
-```text
-$LogSummary
-```
-"@
+    $SafeDescription = '```text' + "`n" + $LogSummary + "`n" + '```'
 
     Send-DiscordWebhook -WebhookUrl $WebhookUrl -Title $Title -Description $SafeDescription -Color $Color -Fields $Fields
 }
