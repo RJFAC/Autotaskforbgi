@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Master V5.12 - 登出機制強化與診斷版
+# AutoTask Master V5.13 - 登出機制強化與診斷版 (含 Discord 通知)
 # =============================================================================
 
 # --- [0. 權限自我檢查] ---
@@ -16,6 +16,11 @@ $ScriptDir  = "$BaseDir\Scripts"
 $ConfigDir  = "$BaseDir\Configs"
 $FlagDir    = "$BaseDir\Flags"
 $LogDir     = "$BaseDir\Logs"
+$LogFileName = "Master_$(Get-Date -Format 'yyyyMMdd').log"
+$LogFile     = Join-Path $LogDir $LogFileName
+
+# 載入 Discord 模組 (新增)
+if (Test-Path "$ScriptDir\Lib_Discord.ps1") { . "$ScriptDir\Lib_Discord.ps1" }
 
 if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -ItemType Directory -Force | Out-Null }
 if (-not (Test-Path $FlagDir)) { New-Item -Path $FlagDir -ItemType Directory -Force | Out-Null }
@@ -23,8 +28,6 @@ if (-not (Test-Path $FlagDir)) { New-Item -Path $FlagDir -ItemType Directory -Fo
 function Write-Log {
     param([string]$Message, [string]$Color="White")
     $TimeStamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $LogFileName = "Master_$(Get-Date -Format 'yyyyMMdd').log"
-    $LogFile = Join-Path $LogDir $LogFileName
     $FormattedMsg = "[$TimeStamp] $Message"
     Write-Host $FormattedMsg -ForegroundColor $Color
     try { Add-Content -Path $LogFile -Value $FormattedMsg -Encoding UTF8 -ErrorAction SilentlyContinue } catch {}
@@ -44,6 +47,7 @@ $PauseLog       = "$ConfigDir\PauseDates.log"
 $NoShutdownLog  = "$ConfigDir\NoShutdown.log"
 $CountdownScript= "$ScriptDir\Shutdown-Countdown.ps1"
 $TaskStatus     = "$ConfigDir\TaskStatus.json"
+$LastRunLog     = "$ConfigDir\LastRun.log"
 
 # 讀取 1Remote 路徑
 $1RemoteDir = "C:\AutoTask\1Remote"
@@ -68,7 +72,7 @@ function Check-Network {
     Write-Log "⚠️ 網路連線逾時。" "Red"; return $false
 }
 
-Write-Log ">>> Master 啟動 (Admin Mode - V5.12)..." "Cyan"
+Write-Log ">>> Master 啟動 (Admin Mode - V5.13 + Discord)..." "Cyan"
 
 # =============================================================================
 # [核心邏輯] 判斷是「全新啟動」還是「接手續跑」
@@ -170,8 +174,23 @@ $LastRestartTime = Get-Date
 while ($true) {
     Start-Sleep 5
 
-    if (Test-Path $DoneFlag) { Write-Log "任務成功 (Done)！" "Green"; break }
-    if (Test-Path $FailFlag) { Write-Log "任務失敗 (Fail)！" "Red"; Remove-Item $RunFlag -Force; Stop-Process -Name "1Remote" -Force; exit }
+    if (Test-Path $DoneFlag) { 
+        Write-Log "任務成功 (Done)！" "Green"
+        # [Discord] 任務成功通知
+        if (Get-Command Send-AutoTaskReport -ErrorAction SilentlyContinue) {
+            Send-AutoTaskReport -Status "Success" -LogFile $LogFile
+        }
+        break 
+    }
+    if (Test-Path $FailFlag) { 
+        Write-Log "任務失敗 (Fail)！" "Red"
+        # [Discord] 任務失敗通知
+        if (Get-Command Send-AutoTaskReport -ErrorAction SilentlyContinue) {
+            Send-AutoTaskReport -Status "Error" -LogFile $LogFile
+        }
+        Remove-Item $RunFlag -Force; Stop-Process -Name "1Remote" -Force
+        exit 
+    }
 
     $MonitorProc = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*Monitor.ps1*" }
     if (-not $MonitorProc) {

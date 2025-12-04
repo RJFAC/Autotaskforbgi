@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Dashboard V8.9 - 存檔邏輯修復版
+# AutoTask Dashboard V9.0 - Discord & Snapshot 整合版
 # =============================================================================
 
 # --- [隱藏 Console 黑窗] ---
@@ -31,7 +31,9 @@ $BetterGI_UserDir = "C:\Program Files\BetterGI\User\OneDragon"
 $MasterScript = "$ScriptDir\Master.ps1"
 $StopScript = "$ScriptDir\StopAll.ps1"
 $PublishScript = "$ScriptDir\PublishRelease.ps1"
-$SnapshotScript = "$ScriptDir\Get-AutoTaskSnapshot.ps1"
+# [修正] 指向新的快照腳本
+$SnapshotScript = "$ScriptDir\Task_Snapshot.ps1" 
+$DiscordSetupScript = "$ScriptDir\Setup_Discord.ps1"
 $HashFile = "$ConfigsDir\ScriptHash.txt"
 
 # --- [全域變數] ---
@@ -45,7 +47,7 @@ $Global:ResinData = @{}
 $Global:InitialHash = ""
 $Script:IsDirty = $false
 $Script:IsLoading = $false
-$WindowTitle = "AutoTask 控制台 V8.9"
+$WindowTitle = "AutoTask 控制台 V9.0"
 
 # 字型
 $MainFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10)
@@ -259,82 +261,11 @@ $TabGrid = New-Object System.Windows.Forms.TabPage; $TabGrid.Text = "[GRID] 排�
 $grid = New-Object System.Windows.Forms.DataGridView; $grid.Dock="Fill"; $grid.EditMode="EditProgrammatically"; $grid.Font=$MonoFont; $grid.MultiSelect=$true
 $grid.Columns.Add("Date","日期"); $grid.Columns[0].ReadOnly=$true; $grid.Columns[0].Width=120; $grid.Columns.Add("Week","星期"); $grid.Columns[1].ReadOnly=$true; $grid.Columns[1].Width=60; $grid.Columns.Add("Def","每週預設"); $grid.Columns[2].ReadOnly=$true; $grid.Columns[2].Width=100; $grid.Columns.Add("Conf","執行配置 (雙擊)"); $grid.Columns[3].Width=250; $grid.Columns.Add("Shut","不關機"); $grid.Columns[4].Width=60; $grid.Columns[4].CellTemplate=New-Object System.Windows.Forms.DataGridViewCheckBoxCell; $grid.Columns.Add("Note","備註"); $grid.Columns[5].ReadOnly=$true; $grid.Columns[5].Width=150
 $grid.Add_CellClick({ param($s,$e); if($e.RowIndex-lt 0){return}; if($e.ColumnIndex-eq 4){ $c=$grid.Rows[$e.RowIndex].Cells[4]; $v=-not [bool]$c.Value; $sel=$grid.SelectedCells|Where{$_.ColumnIndex-eq 4}; if($sel.Count-gt 0 -and ($sel|Where{$_.RowIndex-eq $e.RowIndex})){foreach($x in $sel){$x.Value=$v}}else{$c.Value=$v}; Mark-Dirty } })
-
-# [UI修正] 雙擊編輯事件：選取非 PAUSE 項目時，強制清除背景顏色
-$grid.Add_CellDoubleClick({ param($s,$e); 
-    if($e.RowIndex-lt 0-or $e.ColumnIndex-ne 3){return}; 
-    $c=$grid.Rows[$e.RowIndex].Cells[3]; 
-    $cv=$c.Value; 
-    if($cv-eq $grid.Rows[$e.RowIndex].Cells[2].Value-or $cv-eq "PAUSE"){$cv=""}; 
-    $n=Show-ConfigSelectorGUI $cv; 
-    if($n-ne $null){
-        if($n-eq""){
-            $c.Value=$grid.Rows[$e.RowIndex].Cells[2].Value;
-            $c.Style.BackColor="White"; $c.Style.ForeColor="Black"; $c.Style.Font=$MonoFont
-        }else{
-            $c.Value=$n; 
-            $c.Style.ForeColor="Blue"; $c.Style.Font=$BoldFont; 
-            $c.Style.BackColor="White" # 清除 PAUSE 背景
-        }
-        Mark-Dirty
-    } 
-})
-
-# [UI修正] 按鍵事件：Delete 時強制清除背景顏色
-$grid.Add_KeyDown({ param($s,$e); 
-    if($e.KeyCode-eq "Delete"){
-        foreach($c in $grid.SelectedCells){
-            if($c.ColumnIndex-eq 3){
-                $def=$grid.Rows[$c.RowIndex].Cells[2].Value;
-                $c.Value=$def;
-                $c.Style.BackColor = "White" # 清除 PAUSE 背景
-                $c.Style.ForeColor = "Black"
-                $c.Style.Font = $MonoFont
-                Mark-Dirty
-            }
-        }
-    };
-    if($e.Control-and $e.KeyCode-eq "V"){
-        $t=[Windows.Forms.Clipboard]::GetText().Trim();
-        if($t){
-            foreach($c in $grid.SelectedCells){
-                if($c.ColumnIndex-eq 3){
-                    $c.Value=$t;
-                    if($t-eq"PAUSE"){
-                        $c.Style.BackColor="LightCoral";$c.Style.ForeColor="White"
-                    }else{
-                        $c.Style.ForeColor="Blue";$c.Style.Font=$BoldFont;$c.Style.BackColor="White"
-                    }
-                    Mark-Dirty
-                }
-            }
-        }
-    } 
-})
+$grid.Add_CellDoubleClick({ param($s,$e); if($e.RowIndex-lt 0-or $e.ColumnIndex-ne 3){return}; $c=$grid.Rows[$e.RowIndex].Cells[3]; $cv=$c.Value; if($cv-eq $grid.Rows[$e.RowIndex].Cells[2].Value-or $cv-eq "PAUSE"){$cv=""}; $n=Show-ConfigSelectorGUI $cv; if($n-ne $null){ if($n-eq""){ $c.Value=$grid.Rows[$e.RowIndex].Cells[2].Value; $c.Style.BackColor="White"; $c.Style.ForeColor="Black"; $c.Style.Font=$MonoFont }else{ $c.Value=$n; $c.Style.ForeColor="Blue"; $c.Style.Font=$BoldFont; $c.Style.BackColor="White" }; Mark-Dirty } })
+$grid.Add_KeyDown({ param($s,$e); if($e.KeyCode-eq "Delete"){ foreach($c in $grid.SelectedCells){ if($c.ColumnIndex-eq 3){ $def=$grid.Rows[$c.RowIndex].Cells[2].Value; $c.Value=$def; $c.Style.BackColor = "White"; $c.Style.ForeColor = "Black"; $c.Style.Font = $MonoFont; Mark-Dirty } } }; if($e.Control-and $e.KeyCode-eq "V"){ $t=[Windows.Forms.Clipboard]::GetText().Trim(); if($t){ foreach($c in $grid.SelectedCells){ if($c.ColumnIndex-eq 3){ $c.Value=$t; if($t-eq"PAUSE"){ $c.Style.BackColor="LightCoral";$c.Style.ForeColor="White" }else{ $c.Style.ForeColor="Blue";$c.Style.Font=$BoldFont;$c.Style.BackColor="White" }; Mark-Dirty } } } } })
 
 function Load-GridData { $Script:IsLoading=$true; $grid.Rows.Clear(); $MapData=@{}; if(Test-Path $DateMap){Get-Content $DateMap|ForEach{if($_-match"^(\d{8})=(.+)$"){$MapData[$matches[1]]=$matches[2]}}}; $PauseData=@(); if(Test-Path $PauseLog){$PauseData=Get-Content $PauseLog}; $NoShutData=@(); if(Test-Path $NoShutdownLog){$NoShutData=Get-Content $NoShutdownLog}; $Start=(Get-Date).AddHours(-4).Date; for($i=0;$i-lt 90;$i++){ $d=$Start.AddDays($i); $dS=$d.ToString("yyyyMMdd"); $wS=$d.DayOfWeek.ToString(); $def=$Global:WeeklyRules[$wS]; $ITDay=Test-TurbulencePeriod $d; if($ITDay-gt 0){$tConf=$Global:TurbulenceRules[$wS];if($tConf){$def="$tConf"}}; $cur=$def; $isO=$false; $isP=$false; if($PauseData-contains $dS){$cur="PAUSE";$isP=$true}elseif($MapData.ContainsKey($dS)){$cur=$MapData[$dS];$isO=$true}; $isS=$NoShutData-contains $dS; if(Test-TurbulencePeriod $d){if($Global:TurbulenceNoShut[$wS]){$isS=$true}}else{if($Global:WeeklyNoShut[$wS]){$isS=$true}}; $note=""; if(Test-GenshinUpdateDay $d){$note="⚠️ 版本更新"}; if($ITDay-gt 0){$note+=" 🔥 紊亂(Day$ITDay)"}; $idx=$grid.Rows.Add($d.ToString("yyyy/MM/dd"),$wS,$def,$cur,$isS,$note); $row=$grid.Rows[$idx]; $row.Tag=$dS; if($isP){$row.Cells[3].Style.BackColor="LightCoral";$row.Cells[3].Style.ForeColor="White"}elseif($isO){$row.Cells[3].Style.ForeColor="Blue";$row.Cells[3].Style.Font=$BoldFont}; if($note){$row.Cells[5].Style.ForeColor="Magenta";$row.Cells[5].Style.Font=$BoldFont} }; $Script:IsLoading=$false; Mark-Clean }
-
-# [邏輯修正] Save-GridData 避免管線輸入為空時 Set-Content 不執行的問題
-function Save-GridData { 
-    $newMap=@(); $newP=@(); $newS=@(); 
-    foreach($r in $grid.Rows){ 
-        $k=$r.Tag; $def=$r.Cells[2].Value; $cur=$r.Cells[3].Value; $shut=$r.Cells[4].Value; 
-        if($cur-eq"PAUSE"){$newP+=$k}elseif($cur-ne$def){$newMap+="$k=$cur"}; 
-        $dObj=[DateTime]::ParseExact($k,"yyyyMMdd",$null); $wS=$dObj.DayOfWeek.ToString(); $defShut=$false; 
-        if(Test-TurbulencePeriod $dObj){if($Global:TurbulenceNoShut[$wS]){$defShut=$true}}else{if($Global:WeeklyNoShut[$wS]){$defShut=$true}}; 
-        if($shut-and-not$defShut){$newS+=$k} 
-    }; 
-    # 強制覆蓋檔案，即使陣列為空 (使用 New-Item 建立空檔)
-    if ($newMap.Count -gt 0) { $newMap | Sort-Object | Set-Content $DateMap -Encoding UTF8 } else { New-Item $DateMap -ItemType File -Force | Out-Null }
-    if ($newP.Count -gt 0)   { $newP   | Sort-Object | Set-Content $PauseLog -Encoding UTF8 } else { New-Item $PauseLog -ItemType File -Force | Out-Null }
-    if ($newS.Count -gt 0)   { $newS   | Sort-Object | Set-Content $NoShutdownLog -Encoding UTF8 } else { New-Item $NoShutdownLog -ItemType File -Force | Out-Null }
-    
-    Mark-Clean; 
-    [System.Windows.Forms.MessageBox]::Show("設定已儲存！"); 
-    Load-GridData; 
-    Init-WeeklyTab 
-}
-
+function Save-GridData { $newMap=@(); $newP=@(); $newS=@(); foreach($r in $grid.Rows){ $k=$r.Tag; $def=$r.Cells[2].Value; $cur=$r.Cells[3].Value; $shut=$r.Cells[4].Value; if($cur-eq"PAUSE"){$newP+=$k}elseif($cur-ne$def){$newMap+="$k=$cur"}; $dObj=[DateTime]::ParseExact($k,"yyyyMMdd",$null); $wS=$dObj.DayOfWeek.ToString(); $defShut=$false; if(Test-TurbulencePeriod $dObj){if($Global:TurbulenceNoShut[$wS]){$defShut=$true}}else{if($Global:WeeklyNoShut[$wS]){$defShut=$true}}; if($shut-and-not$defShut){$newS+=$k} }; if ($newMap.Count -gt 0) { $newMap | Sort-Object | Set-Content $DateMap -Encoding UTF8 } else { New-Item $DateMap -ItemType File -Force | Out-Null }; if ($newP.Count -gt 0)   { $newP   | Sort-Object | Set-Content $PauseLog -Encoding UTF8 } else { New-Item $PauseLog -ItemType File -Force | Out-Null }; if ($newS.Count -gt 0)   { $newS   | Sort-Object | Set-Content $NoShutdownLog -Encoding UTF8 } else { New-Item $NoShutdownLog -ItemType File -Force | Out-Null }; Mark-Clean; [System.Windows.Forms.MessageBox]::Show("設定已儲存！"); Load-GridData; Init-WeeklyTab }
 $TabGrid.Controls.Add($grid); $TabGrid.Controls.Add($pTool)
 
 # === 分頁 3: 每週配置 ===
@@ -347,29 +278,28 @@ function Build-WRow ($parent, $y, $txt, $key, $store, $storeCheck) { $l=New-Obje
 $lblW1 = New-Object System.Windows.Forms.Label; $lblW1.Text="=== 一般每週排程 ==="; $lblW1.Location="20,20"; $lblW1.AutoSize=$true; $lblW1.Font=$BoldFont; $lblW1.ForeColor="DarkBlue"; $pnlW.Controls.Add($lblW1); $y=50; for($i=0;$i-lt 7;$i++){ Build-WRow $pnlW $y $DaysTxt[$i] $DaysKey[$i] $WInputs $WShutChecks; $y+=40 }
 $y+=10; $lblW2 = New-Object System.Windows.Forms.Label; $lblW2.Text="=== 紊亂爆發期 (幽境危戰) 專用 ==="; $lblW2.Location="20,$y"; $lblW2.AutoSize=$true; $lblW2.Font=$BoldFont; $lblW2.ForeColor="DarkRed"; $lblW3 = New-Object System.Windows.Forms.Label; $lblW3.Text="(版本更新後第8~17天，優先級高於一般排程)"; $lblW3.Location="20,$($y+25)"; $lblW3.AutoSize=$true; $lblW3.Font=$MainFont; $lblW3.ForeColor="Gray"; $pnlW.Controls.AddRange(@($lblW2, $lblW3)); $y+=60; for($i=0;$i-lt 7;$i++){ Build-WRow $pnlW $y $DaysTxt[$i] $DaysKey[$i] $TInputs $TShutChecks; $y+=40 }
 $y+=30; $btnWSave = New-Object System.Windows.Forms.Button; $btnWSave.Text="儲存所有設定"; $btnWSave.Location="120,$y"; $btnWSave.Size="250,50"; $btnWSave.BackColor="LightGreen"; $btnWSave.Font=$BoldFont; $btnWSave.Add_Click({ $conf=Get-JsonConf $WeeklyConf; if(-not $conf.Turbulence){$conf|Add-Member -Name "Turbulence" -Value @{} -MemberType NoteProperty}; if(-not $conf.NoShutdown){$conf|Add-Member -Name "NoShutdown" -Value @{} -MemberType NoteProperty}; if(-not $conf.Turbulence.NoShutdown){$conf.Turbulence|Add-Member -Name "NoShutdown" -Value @{} -MemberType NoteProperty}; foreach($d in $DaysKey){$conf.$d=$WInputs[$d].Text; $conf.Turbulence.$d=$TInputs[$d].Text; $conf.NoShutdown.$d=$WShutChecks[$d].Checked; $conf.Turbulence.NoShutdown.$d=$TShutChecks[$d].Checked}; if($conf.GenshinPath-eq$null){$conf|Add-Member -Name "GenshinPath" -Value $Global:GenshinPath -MemberType NoteProperty -Force}else{$conf.GenshinPath=$Global:GenshinPath}; $conf|ConvertTo-Json -Depth 4|Set-Content $WeeklyConf; Load-WeeklyRules; Mark-Clean; [System.Windows.Forms.MessageBox]::Show("設定已儲存！"); Load-GridData }); $pnlW.Controls.Add($btnWSave); $TabWeekly.Controls.Add($pnlW)
-
-function Init-WeeklyTab { 
-    $Script:IsLoading = $true
-    $wk=Get-JsonConf $WeeklyConf; if($wk){ 
-        foreach($d in $DaysKey){ 
-            if($WInputs.ContainsKey($d)){$WInputs[$d].Text=$wk.$d}; if($wk.Turbulence-and $TInputs.ContainsKey($d)){$TInputs[$d].Text=$wk.Turbulence.$d}; 
-            if($wk.NoShutdown-and $WShutChecks.ContainsKey($d)){$WShutChecks[$d].Checked=[bool]$wk.NoShutdown.$d}; 
-            if($wk.Turbulence.NoShutdown-and $TShutChecks.ContainsKey($d)){$TShutChecks[$d].Checked=[bool]$wk.Turbulence.NoShutdown.$d} 
-        } 
-    } 
-    $Script:IsLoading = $false
-}
+function Init-WeeklyTab { $Script:IsLoading = $true; $wk=Get-JsonConf $WeeklyConf; if($wk){ foreach($d in $DaysKey){ if($WInputs.ContainsKey($d)){$WInputs[$d].Text=$wk.$d}; if($wk.Turbulence-and $TInputs.ContainsKey($d)){$TInputs[$d].Text=$wk.Turbulence.$d}; if($wk.NoShutdown-and $WShutChecks.ContainsKey($d)){$WShutChecks[$d].Checked=[bool]$wk.NoShutdown.$d}; if($wk.Turbulence.NoShutdown-and $TShutChecks.ContainsKey($d)){$TShutChecks[$d].Checked=[bool]$wk.Turbulence.NoShutdown.$d} } }; $Script:IsLoading = $false }
 
 # === 分頁 4: 樹脂策略 ===
 $TabResin=New-Object System.Windows.Forms.TabPage;$TabResin.Text="🧪 樹脂策略";$pnlResin=New-Object System.Windows.Forms.Panel;$pnlResin.Dock="Fill";$pnlResin.Padding="20";$lblR1=New-Object System.Windows.Forms.Label;$lblR1.Text="選擇一條龍配置組:";$lblR1.Location="20,20";$lblR1.AutoSize=$true;$lblR1.Font=$BoldFont;$cbRConfig=New-Object System.Windows.Forms.ComboBox;$cbRConfig.Location="180,18";$cbRConfig.Width=250;$cbRConfig.DropDownStyle="DropDownList";$cbRConfig.Font=$MainFont;$grpType=New-Object System.Windows.Forms.GroupBox;$grpType.Text="任務類型";$grpType.Location="20,60";$grpType.Size="200,80";$rbDomain=New-Object System.Windows.Forms.RadioButton;$rbDomain.Text="自動秘境 (Domain)";$rbDomain.Location="20,25";$rbDomain.Width=150;$rbDomain.Checked=$true;$rbStygian=New-Object System.Windows.Forms.RadioButton;$rbStygian.Text="幽境危戰 (Stygian)";$rbStygian.Location="20,50";$rbStygian.Width=150;$grpType.Controls.AddRange(@($rbDomain,$rbStygian));$grpMode=New-Object System.Windows.Forms.GroupBox;$grpMode.Text="消耗模式";$grpMode.Location="240,60";$grpMode.Size="200,80";$rbAll=New-Object System.Windows.Forms.RadioButton;$rbAll.Text="完全消耗 (All)";$rbAll.Location="20,25";$rbAll.Width=150;$rbAll.Checked=$true;$rbCount=New-Object System.Windows.Forms.RadioButton;$rbCount.Text="指定次數 (Count)";$rbCount.Location="20,50";$rbCount.Width=150;$grpMode.Controls.AddRange(@($rbAll,$rbCount));$grpCounts=New-Object System.Windows.Forms.GroupBox;$grpCounts.Text="指定次數";$grpCounts.Location="20,150";$grpCounts.Size="420,80";$lC1=New-Object System.Windows.Forms.Label;$lC1.Text="原粹:";$lC1.Location="20,30";$lC1.AutoSize=$true;$nO=New-Object System.Windows.Forms.NumericUpDown;$nO.Location="60,28";$nO.Width=50;$lC2=New-Object System.Windows.Forms.Label;$lC2.Text="濃縮:";$lC2.Location="120,30";$lC2.AutoSize=$true;$nC=New-Object System.Windows.Forms.NumericUpDown;$nC.Location="160,28";$nC.Width=50;$grpCounts.Controls.AddRange(@($lC1,$nO,$lC2,$nC));$grpPrio=New-Object System.Windows.Forms.GroupBox;$grpPrio.Text="優先級";$grpPrio.Location="20,250";$grpPrio.Size="200,200";$lstPrio=New-Object System.Windows.Forms.ListBox;$lstPrio.Location="20,30";$lstPrio.Size="120,150";$bU=New-Object System.Windows.Forms.Button;$bU.Text="▲";$bU.Location="150,50";$bU.Size="30,30";$bD=New-Object System.Windows.Forms.Button;$bD.Text="▼";$bD.Location="150,100";$bD.Size="30,30";$grpPrio.Controls.AddRange(@($lstPrio,$bU,$bD));$bRS=New-Object System.Windows.Forms.Button;$bRS.Text="儲存";$bRS.Location="250,300";$bRS.Size="180,50";$bRS.BackColor="LightGreen";$bRD=New-Object System.Windows.Forms.Button;$bRD.Text="刪除";$bRD.Location="250,360";$bRD.Size="180,40";$bRD.BackColor="LightCoral";$cbRConfig.Add_DropDown({$cbRConfig.Items.Clear();$r=$Global:ConfigList|Where{$_-ne"PAUSE"};$cbRConfig.Items.AddRange($r)});$cbRConfig.Add_SelectedIndexChanged({$s=$cbRConfig.Text;if($Global:ResinData.ContainsKey($s)){$d=$Global:ResinData.$s;if($d.TaskType-eq"Stygian"){$rbStygian.Checked=$true}else{$rbDomain.Checked=$true};if($d.ResinMode-eq"Count"){$rbCount.Checked=$true}else{$rbAll.Checked=$true};$nO.Value=$d.Counts.Original;$nC.Value=$d.Counts.Condensed;$lstPrio.Items.Clear();if($d.Priority){$lstPrio.Items.AddRange($d.Priority)}else{$lstPrio.Items.AddRange(@("浓缩树脂","原粹树脂","须臾树脂","脆弱树脂"))}}else{$rbDomain.Checked=$true;$rbAll.Checked=$true;$nO.Value=0;$nC.Value=0;$lstPrio.Items.Clear();$lstPrio.Items.AddRange(@("浓缩树脂","原粹树脂","须臾树脂","脆弱树脂"))}});$bU.Add_Click({$i=$lstPrio.SelectedIndex;if($i-gt 0){$t=$lstPrio.SelectedItem;$lstPrio.Items.RemoveAt($i);$lstPrio.Items.Insert($i-1,$t);$lstPrio.SelectedIndex=$i-1}});$bD.Add_Click({$i=$lstPrio.SelectedIndex;if($i-ge 0-and $i-lt$lstPrio.Items.Count-1){$t=$lstPrio.SelectedItem;$lstPrio.Items.RemoveAt($i);$lstPrio.Items.Insert($i+1,$t);$lstPrio.SelectedIndex=$i+1}});$bRS.Add_Click({$s=$cbRConfig.Text;if(-not$s){return};$p=@();foreach($i in $lstPrio.Items){$p+=$i};$nd=@{TaskType=if($rbStygian.Checked){"Stygian"}else{"Domain"};ResinMode=if($rbCount.Checked){"Count"}else{"All"};Priority=$p;Counts=@{Original=$nO.Value;Condensed=$nC.Value}};$Global:ResinData.$s=$nd;$Global:ResinData|ConvertTo-Json -Depth 5|Set-Content $ResinConf -Enc UTF8;[System.Windows.Forms.MessageBox]::Show("Saved")});$bRD.Add_Click({$s=$cbRConfig.Text;if($Global:ResinData.ContainsKey($s)){$Global:ResinData.Remove($s);$Global:ResinData|ConvertTo-Json -Depth 5|Set-Content $ResinConf -Enc UTF8;[System.Windows.Forms.MessageBox]::Show("Deleted");$cbRConfig.SelectedIndex=-1}});$pnlResin.Controls.AddRange(@($lblR1,$cbRConfig,$grpType,$grpMode,$grpCounts,$grpPrio,$bRS,$bRD));$TabResin.Controls.Add($pnlResin)
 
 # === 分頁 5: 工具與維護 ===
 $TabTools=New-Object System.Windows.Forms.TabPage;$TabTools.Text="[TOOL] 工具與維護";$flpTools=New-Object System.Windows.Forms.FlowLayoutPanel;$flpTools.Dock="Fill";$flpTools.FlowDirection="TopDown";$flpTools.Padding="20";$flpTools.AutoSize=$true;function Add-ToolBtn($t,$c,$a){$b=New-Object System.Windows.Forms.Button;$b.Text=$t;$b.Width=400;$b.Height=50;$b.BackColor=$c;$b.Font=$BoldFont;$b.Margin="0,0,0,15";$b.Add_Click($a);$flpTools.Controls.Add($b)};$lblPath=New-Object System.Windows.Forms.Label;$lblPath.AutoSize=$true;$lblPath.Font=$MainFont;$lblPath.ForeColor="Gray";$flpTools.Controls.Add($lblPath);function Update-PathLabel{$p="尚未設定";if($Global:GenshinPath){$p=$Global:GenshinPath};$lblPath.Text="目前遊戲路徑: $p"};Add-ToolBtn "📂 設定原神遊戲路徑" "LightYellow" {$f=Auto-Detect-GenshinPath;$u=$false;if($f){if([System.Windows.Forms.MessageBox]::Show("找到路徑:\n$f\n使用?","偵測","YesNo")-eq"Yes"){$Global:GenshinPath=$f;$u=$true}};if(-not$u){$d=New-Object System.Windows.Forms.FolderBrowserDialog;if($d.ShowDialog()-eq"OK"){$Global:GenshinPath=$d.SelectedPath;$u=$true}};if($u){$e=@{GenshinPath=$Global:GenshinPath};$e|ConvertTo-Json|Set-Content "$ConfigsDir\EnvConfig.json";Update-PathLabel}};Add-ToolBtn "[COPY] 複製配置" "LightBlue" {$s=Show-ConfigSelectorGUI "";if($s){$s=($s-split",")[0];$n=[Microsoft.VisualBasic.Interaction]::InputBox("新名稱:","複製","$s-Copy");if($n){$src=Join-Path $BetterGI_UserDir "$s.json";$dst=Join-Path $BetterGI_UserDir "$n.json";if(Test-Path $src){Copy-Item $src $dst -Force;$j=Get-Content $dst -Raw|ConvertFrom-Json;$j.Name=$n;$j|ConvertTo-Json|Set-Content $dst;Load-BetterGIConfigs}}}};Add-ToolBtn "[SYNC] 同步配置名稱" "LightBlue" {$r=[System.Windows.Forms.MessageBox]::Show("修正內部 Name?","確認","YesNo");if($r-eq"Yes"){if(Test-Path $BetterGI_UserDir){Get-ChildItem "$BetterGI_UserDir\*.json"|ForEach{try{$j=Get-Content $_.FullName -Raw|ConvertFrom-Json;if($j.Name-ne$_.BaseName){$j.Name=$_.BaseName;$j|ConvertTo-Json|Set-Content $_.FullName}}catch{}}};Load-BetterGIConfigs}};Add-ToolBtn "[STOP] 強制停止" "LightCoral" {if([System.Windows.Forms.MessageBox]::Show("停止?","警","YesNo")-eq"Yes"){Start-Process powershell -Arg "-File `"$StopScript`"" -Verb RunAs}};Add-ToolBtn "[FIX] 修復權限" "LightBlue" {Start-Process powershell -Arg "-Command `"takeown /F '$Dir' /R /D Y; icacls '$Dir' /grant Everyone:(OI)(CI)F /T /C`"" -Verb RunAs};
+
+# [新增] Discord 設定按鈕
+Add-ToolBtn "[DISCORD] 設定通知 Webhook" "LightSkyBlue" {
+    if (Test-Path $DiscordSetupScript) {
+        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$DiscordSetupScript`""
+    } else {
+        [System.Windows.Forms.MessageBox]::Show("找不到腳本:`n$DiscordSetupScript", "錯誤")
+    }
+}
+
+# [修正] 快照按鈕指向新腳本
 Add-ToolBtn "[SNAP] 建立系統快照 (備份)" "LightGoldenrodYellow" { 
-    $TargetScript = "C:\AutoTask\Scripts\Get-AutoTaskSnapshot.ps1"
-    if (Test-Path $TargetScript) { 
-        try { Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$TargetScript`"" -Verb RunAs -ErrorAction Stop } catch { [System.Windows.Forms.MessageBox]::Show("啟動快照腳本失敗:`n$($_.Exception.Message)", "錯誤", "OK", "Error") }
-    } else { [System.Windows.Forms.MessageBox]::Show("找不到腳本:`n$TargetScript") } 
+    if (Test-Path $SnapshotScript) { 
+        try { Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$SnapshotScript`"" -Verb RunAs -ErrorAction Stop } catch { [System.Windows.Forms.MessageBox]::Show("啟動快照腳本失敗:`n$($_.Exception.Message)", "錯誤", "OK", "Error") }
+    } else { [System.Windows.Forms.MessageBox]::Show("找不到腳本:`n$SnapshotScript") } 
 };
 Add-ToolBtn "[GIT] 發布至 GitHub" "LightGray" {Start-Process powershell -Arg "-File `"$PublishScript`""};$TabTools.Controls.Add($flpTools)
 
