@@ -1,5 +1,5 @@
 ﻿# =============================================================================
-# AutoTask Master V5.13 - 登出機制強化與診斷版 (含 Discord 通知)
+# AutoTask Master V5.14 - 登出機制強化與診斷版 (含 Discord 通知)
 # =============================================================================
 
 # --- [0. 權限自我檢查] ---
@@ -115,6 +115,12 @@ if (-not $IsResume) {
         try {
             $ResetStatus = @{ Date=(Get-Date).AddHours(-4).ToString("yyyyMMdd"); Status="Preparing"; RetryCount=0; LastUpdate=(Get-Date).ToString("yyyy-MM-dd HH:mm:ss") }
             $ResetStatus | ConvertTo-Json | Set-Content $TaskStatus -Encoding UTF8
+            
+            # [新增] 發送狀態變更通知 (Preparing)
+            if (Get-Command Send-DiscordWebhook -ErrorAction SilentlyContinue) {
+                $WebhookUrl = Get-EnvConfig -Key "DiscordWebhook"
+                Send-DiscordWebhook -WebhookUrl $WebhookUrl -Title "⚙️ 系統準備中" -Description "Master 已啟動，正在重置環境並準備執行任務 (Status: Preparing)。" -Color "3447003" 
+            }
         } catch {}
 
         Stop-Process -Name "1Remote" -Force -ErrorAction SilentlyContinue

@@ -1,5 +1,5 @@
 ﻿# =============================================================================
-# AutoTask Payload V5.22 - 通知增強版 (啟動/中途報錯)
+# AutoTask Payload V5.23 - 狀態變更通知增強版
 # =============================================================================
 $ErrorActionPreference = "Stop"
 trap {
@@ -69,13 +69,12 @@ function Write-Log {
 }
 
 # --- [1. 啟動前安全檢查] ---
-Write-Log "Payload 啟動 (V5.22) PID: $PID..." "Cyan"
+Write-Log "Payload 啟動 (V5.23) PID: $PID..." "Cyan"
 
 try {
     $CurrentPID = $PID
     $TargetScript = "Payload.ps1"
-    $OldInstances = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like "*$TargetScript*" -and $_.ProcessId -ne $CurrentPID }
+    $OldInstances = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*$TargetScript*" -and $_.ProcessId -ne $CurrentPID }
     if ($OldInstances) {
         foreach ($proc in $OldInstances) { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue }
     }
@@ -110,7 +109,66 @@ function Restore-BetterGIConfig { if(Test-Path $BakFile){try{Copy-Item $BakFile 
 function Check-Network { $r=0; while($r-lt 12){if(Test-Connection "8.8.8.8" -Count 1 -Quiet){return $true};Start-Sleep 5;$r++};Write-Log "Net Fail" "Red";return $false }
 function Send-Notify { param($t,$m,$c); if(Test-Path $NotifyScript){Start-Process powershell -Arg "-ExecutionPolicy Bypass -File `"$NotifyScript`" -Title `"$t`" -Message `"$m`" -Color `"$c`"" -WindowStyle Hidden} }
 function Backup-Logs { $t=Get-Date -Format "yyyyMMdd_HHmmss";$d="$BackupRootDir\Failed_$t";New-Item $d -ItemType Directory -Force|Out-Null;$l=(Get-Date).AddHours(-24);$da=New-Item "$d\AutoTask_Logs" -ItemType Directory;Get-ChildItem $LogDir -Filter "*.log"|Where{$_.LastWriteTime-gt$l}|Copy-Item -Dest $da -Force;$db=New-Item "$d\BetterGI_Logs" -ItemType Directory;Get-ChildItem $LogDirBG -Filter "*.log"|Where{$_.LastWriteTime-gt$l}|Copy-Item -Dest $db -Force;if($1RemoteLogDir-and(Test-Path $1RemoteLogDir)){$dr=New-Item "$d\1Remote_Logs" -ItemType Directory;Get-ChildItem $1RemoteLogDir -Include "*.md","*.log" -Recurse|Where{$_.LastWriteTime-gt$l}|Copy-Item -Dest $dr -Force};return $d }
-function Update-Status { param($s,$r); try{$o=@{Date=(Get-Date).AddHours(-4).ToString("yyyyMMdd");Status=$s;RetryCount=$r;LastUpdate=(Get-Date).ToString("yyyy-MM-dd HH:mm:ss")};$o|ConvertTo-Json|Set-Content $TaskStatusFile}catch{} }
+
+# [核心修改] 狀態更新函數 (含自動通知)
+function Update-Status { 
+    param($s, $r)
+    try {
+        $DateStr = (Get-Date).AddHours(-4).ToString("yyyyMMdd")
+        $NewObj = @{
+            Date = $DateStr
+            Status = $s
+            RetryCount = $r
+            LastUpdate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        }
+        
+        # 讀取舊狀態 (用於比對)
+        $OldStatus = $null
+        $OldRetry = -1
+        if (Test-Path $TaskStatusFile) {
+            try {
+                $OldObj = Get-Content $TaskStatusFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                # 確保是同一天的任務才比較，否則視為新開始
+                if ($OldObj.Date -eq $DateStr) {
+                    $OldStatus = $OldObj.Status
+                    $OldRetry = $OldObj.RetryCount
+                }
+            } catch {}
+        }
+        
+        # 寫入新狀態
+        $NewObj | ConvertTo-Json | Set-Content $TaskStatusFile -Encoding UTF8
+
+        # --- [狀態變更通知邏輯] ---
+        # 觸發條件: 狀態字串改變 OR (狀態是 Running 且 重試次數增加)
+        if (($OldStatus -ne $s) -or ($s -eq "Running" -and $OldRetry -ne $r)) {
+            
+            $Color = "Blue"
+            $Title = "📝 狀態更新"
+            $Icon = "ℹ️"
+            
+            if ($s -match "Success") { 
+                $Color = "Green"; $Title = "✅ 任務完成"; $Icon = "✅" 
+            } elseif ($s -match "Failed") { 
+                $Color = "Red"; $Title = "❌ 任務失敗"; $Icon = "❌" 
+            } elseif ($s -match "Running") { 
+                $Color = "Blue"; $Title = "▶️ 任務執行中"; $Icon = "🚀" 
+            } elseif ($s -match "Waiting") { 
+                $Color = "Yellow"; $Title = "⏳ 等待任務時間"; $Icon = "💤" 
+            } elseif ($s -match "Maintenance") { 
+                $Color = "Yellow"; $Title = "🚧 系統維護中"; $Icon = "🔧" 
+            } elseif ($s -match "Paused") { 
+                $Color = "Yellow"; $Title = "⛔ 今日已暫停"; $Icon = "⏸️" 
+            }
+
+            $Msg = "$Icon 目前狀態: $s"
+            if ($r -gt 0) { $Msg += "`n🔄 重試次數: $r" }
+
+            Send-Notify $Title $Msg $Color
+        }
+    } catch {} 
+}
+
 function Get-TargetConfig { $t=(Get-Date).AddHours(-4);$ds=$t.ToString("yyyyMMdd");if(Test-Path $DateMap){try{$m=Get-Content $DateMap;foreach($l in $m){if($l-match"^$ds=(.+)$"){return $matches[1]}}}catch{}};if(Test-Path $WeeklyConf){try{$w=Get-Content $WeeklyConf -Raw|ConvertFrom-Json;if($w){if($w.IT_Period_Days-gt 0 -and $t.Day-ge 1 -and $t.Day-le $w.IT_Period_Days){return $w.IT_Period_Config};return $w.$($t.DayOfWeek.ToString())}}catch{}};return "day" }
 function Test-GenshinUpdateDay ($d) { $r=[datetime]"2024-08-28";$diff=($d.Date-$r).Days;if($diff-ge 0 -and $diff%42-eq 0){return $true}return $false }
 function Check-GenshinPreDownload { if(-not $Global:GenshinPath){return};$r=[datetime]"2024-08-28";$d=((Get-Date).Date-$r).Days%42;if($d-ne 40-and $d-ne 41){return};Write-Log "Check PreDL" "Gray" }
@@ -267,7 +325,6 @@ while ($RetryCount -le $MaxRetries) {
             Write-Log "錯誤：日誌鎖定失敗！" "Red"
             $IsFailed = $true 
             $ErrorType = "LogLockFail"
-            # 診斷日誌列表輸出省略...
             Write-Log "--- [診斷資訊: 目錄掃描] ---" "Gray"
             try { Get-ChildItem $LogDirBG -Filter "better-genshin-impact*.log" | Select Name, LastWriteTime | Out-String | Write-Host } catch {}
             Write-Log "----------------------------" "Gray"
@@ -311,7 +368,7 @@ while ($RetryCount -le $MaxRetries) {
                          break
                     }
                 }
-                
+                 
                 $LogFile.Refresh()
                 if (((Get-Date) - $LogFile.LastWriteTime).TotalMinutes -gt $HeartbeatLimit) { Write-Log "卡死判定！(日誌靜止超過 $HeartbeatLimit 分)" "Red"; $IsFailed=$true; $ErrorType = "HeartbeatTimeout" }
             }
