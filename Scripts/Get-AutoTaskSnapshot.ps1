@@ -1,159 +1,93 @@
-﻿# =============================================================================
-# Get-AutoTaskSnapshot_Merged_v5.ps1 - 系統資訊合併打包工具 (智慧截斷版)
-# =============================================================================
-# 版本：V5 (優化大檔案處理策略)
-# 功能：
-# 1. 收集 AutoTask 架構、腳本、設定、XML 排程。
-# 2. 智慧合併日誌：
-#    - 小檔案 (<10MB)：完整保留。
-#    - 大檔案 (>10MB)：保留 "前100行(啟動資訊)" + "最後20000行(關鍵錯誤)"。
-# 3. 輸出至 C:\AutoTask\，檔名包含時間戳記。
-
+﻿# =======================================================
+# 檔案名稱: Task_Snapshot.ps1
+# 功能: 製作 AutoTask 完整系統快照 (策略 v3.0 - 大容量日誌版)
+# =======================================================
 $ErrorActionPreference = "SilentlyContinue"
 $BaseDir = "C:\AutoTask"
-$TempDir = "$BaseDir\Snapshot_Temp"
-
-# --- [生成帶時間戳的檔名] ---
 $TimeStamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$ZipName = "AutoTask_Snapshot_$TimeStamp.zip"
-$ZipPath = Join-Path $BaseDir $ZipName
-$DateLimit = (Get-Date).AddHours(-24)
+$SnapshotDir = "$BaseDir\Snapshot_Temp_$TimeStamp"
+$ZipFile = "$BaseDir\AutoTask_Snapshot_$TimeStamp.zip"
 
-# 閾值設定
-$SizeLimitBytes = 10MB  # 超過 10MB 視為大檔案
-$TailLines      = 20000 # 保留最後 20000 行
-$HeadLines      = 100   # 保留前 100 行 (保留啟動參數)
+# --- [設定] 日誌截斷參數 (大幅放寬限制) ---
+# 原因：文字檔壓縮率極高 (5MB -> ~300KB zip)，為了除錯應盡量保留完整日誌。
+$LogSizeThreshold = 5MB   # 閾值提升至 5MB (確保 99% 的日誌都能完整讀取)
+$LogHeadLines     = 200   # 若必須截斷，保留前 200 行 (確保包含所有啟動參數與環境檢查)
+$LogTailLines     = 5000  # 若必須截斷，保留後 5000 行 (約 500KB，涵蓋完整錯誤堆疊與上下文)
 
-# --- [0. 權限檢查] ---
-$currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host "請求管理員權限..." -ForegroundColor Yellow
-    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
-    exit
-}
+Write-Host ">>> [AutoTask] 正在製作系統診斷快照..." -ForegroundColor Cyan
+New-Item -Path $SnapshotDir -ItemType Directory -Force | Out-Null
 
-Write-Host "正在執行系統快照 (V5 - 智慧截斷)..." -ForegroundColor Cyan
-Write-Host "目標檔案: $ZipName" -ForegroundColor Gray
+# 1. 檔案結構
+Write-Host " -> 掃描檔案結構..."
+Get-ChildItem -Path $BaseDir -Recurse | Select-Object FullName | Out-String | Set-Content "$SnapshotDir\0_File_Structure.txt" -Encoding UTF8
 
-# --- [1. 準備目錄] ---
-if (Test-Path $TempDir) { Remove-Item $TempDir -Recurse -Force }
-New-Item -Path $TempDir -ItemType Directory | Out-Null
-
-# --- [輔助函式: 合併檔案] ---
-function Merge-Files {
-    param($SourcePath, $Filter, $OutputFile, $HeaderMsg)
-    Write-Host "   處理: $HeaderMsg"
-    
-    $OutPath = $OutputFile.FullName
-    "=== [ $HeaderMsg ] ===" | Set-Content $OutPath -Encoding UTF8
-    
-    if (Test-Path $SourcePath) {
-        $Files = Get-ChildItem $SourcePath -Include $Filter -Recurse | Sort-Object Name
-        
-        # 若是日誌，只取最近 24 小時
-        if ($HeaderMsg -match "Log") {
-            $Files = $Files | Where-Object { $_.LastWriteTime -ge $DateLimit }
-        }
-
-        foreach ($file in $Files) {
-            # 略過壓縮檔本身與暫存檔
-            if ($file.FullName -like "*.zip" -or $file.FullName -like "*Snapshot_Temp*") { continue }
-
-            "`n`n" | Add-Content $OutPath -Encoding UTF8
-            "=============================================================================" | Add-Content $OutPath -Encoding UTF8
-            "FILE: $($file.Name)  |  PATH: $($file.FullName)" | Add-Content $OutPath -Encoding UTF8
-            "TIME: $($file.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'))  |  SIZE: $([math]::Round($file.Length/1MB, 2)) MB" | Add-Content $OutPath -Encoding UTF8
-            "=============================================================================" | Add-Content $OutPath -Encoding UTF8
-            
-            try {
-                if ($file.Length -gt $SizeLimitBytes) {
-                    Write-Host "      [截斷] $($file.Name) 大於 10MB，執行智慧縮減..." -ForegroundColor DarkGray
-                    
-                    "[SYSTEM NOTICE: File too large ($([math]::Round($file.Length/1MB, 2)) MB). Content Truncated.]" | Add-Content $OutPath -Encoding UTF8
-                    "[--- HEAD (First $HeadLines lines) ---]" | Add-Content $OutPath -Encoding UTF8
-                    Get-Content $file.FullName -Head $HeadLines | Out-String | Add-Content $OutPath -Encoding UTF8
-                    
-                    "`n... (Middle content omitted) ...`n" | Add-Content $OutPath -Encoding UTF8
-                    
-                    "[--- TAIL (Last $TailLines lines) ---]" | Add-Content $OutPath -Encoding UTF8
-                    Get-Content $file.FullName -Tail $TailLines | Out-String | Add-Content $OutPath -Encoding UTF8
-                } else {
-                    Get-Content $file.FullName -Raw | Add-Content $OutPath -Encoding UTF8
-                }
-            } catch {
-                "[ERROR READING FILE: $_]" | Add-Content $OutPath -Encoding UTF8
-            }
-        }
-    } else {
-        "`n[Path Not Found: $SourcePath]" | Add-Content $OutPath -Encoding UTF8
+# 2. 腳本檔案 (完整內容)
+Write-Host " -> 備份腳本內容..."
+$ScriptContent = "=== [ AutoTask Scripts Snapshot ] ===`r`n"
+$ScriptFiles = Get-ChildItem -Path "$BaseDir\Scripts", "$BaseDir" -Include *.ps1, *.bat -Recurse
+foreach ($File in $ScriptFiles) {
+    if ($File.Length -lt 5000000) { 
+        $ScriptContent += "`r`n" + ("=" * 70) + "`r`n"
+        $ScriptContent += "FILE: $($File.Name) | PATH: $($File.FullName)`r`n"
+        $ScriptContent += ("=" * 70) + "`r`n"
+        try { $ScriptContent += (Get-Content $File.FullName -Raw -Encoding UTF8) + "`r`n" } catch { $ScriptContent += "[Error Reading File]`r`n" }
     }
 }
+Set-Content -Path "$SnapshotDir\1_Full_Scripts.txt" -Value $ScriptContent -Encoding UTF8
 
-# --- [2. 合併 AutoTask 核心] ---
-Write-Host "1. 合併核心腳本與設定..."
-Merge-Files -SourcePath "$BaseDir\Scripts" -Filter "*.ps1" -OutputFile (New-Item "$TempDir\1_AT_Scripts.txt" -Force) -HeaderMsg "AutoTask PowerShell Scripts"
-Merge-Files -SourcePath "$BaseDir\Configs" -Filter "*.json","*.map","*.log" -OutputFile (New-Item "$TempDir\2_AT_Configs.txt" -Force) -HeaderMsg "AutoTask Configs"
+# 3. 設定檔
+Write-Host " -> 備份設定檔..."
+$ConfigContent = "=== [ AutoTask Configs ] ===`r`n"
+$ConfigFiles = Get-ChildItem -Path "$BaseDir\Configs" -Include *.json, *.xml, *.map -Recurse
+foreach ($File in $ConfigFiles) {
+    $ConfigContent += "`r`n" + ("=" * 70) + "`r`n"
+    $ConfigContent += "FILE: $($File.Name)`r`n"
+    $ConfigContent += (Get-Content $File.FullName -Raw -Encoding UTF8) + "`r`n"
+}
+Set-Content -Path "$SnapshotDir\2_Configs.txt" -Value $ConfigContent -Encoding UTF8
 
-# 附加 Flags 狀態
-$FlagFile = "$TempDir\2_AT_Configs.txt"
-"`n`n=== [ Current Flags ] ===" | Add-Content $FlagFile -Encoding UTF8
-Get-ChildItem "$BaseDir\Flags" | Select Name, LastWriteTime | Out-String | Add-Content $FlagFile -Encoding UTF8
+# 4. 近期日誌 (策略優化)
+Write-Host " -> 擷取近期日誌 (閾值: 5MB)..."
+$LogContent = "=== [ Recent Logs Summary ] ===`r`n"
+# 抓取 AutoTask Logs, 1Remote Logs 以及 BetterGI Logs
+$BetterGILogDir = "C:\Program Files\BetterGI\log"
+$LogSearchPaths = @("$BaseDir\Logs", "$BaseDir\1Remote\.logs")
+if (Test-Path $BetterGILogDir) { $LogSearchPaths += $BetterGILogDir }
 
-# --- [3. 匯出與合併工作排程] ---
-Write-Host "2. 匯出工作排程..."
-$TaskFile = "$TempDir\3_Task_Schedules.xml.txt"
-"=== Task Schedules XML Export ===" | Set-Content $TaskFile -Encoding UTF8
-"`n--- [ Auto_BetterGI_Payload ] ---" | Add-Content $TaskFile -Encoding UTF8
-schtasks /query /tn "Auto_BetterGI_Payload" /xml | Out-String | Add-Content $TaskFile -Encoding UTF8
-"`n`n--- [ Auto_1Remote_Master ] ---" | Add-Content $TaskFile -Encoding UTF8
-schtasks /query /tn "Auto_1Remote_Master" /xml | Out-String | Add-Content $TaskFile -Encoding UTF8
+# 增加擷取數量至 20 個，確保包含 Master, Monitor, Payload 以及 BetterGI 的日誌
+$LogFiles = Get-ChildItem -Path $LogSearchPaths -Include *.log, *.md -Recurse | Sort-Object LastWriteTime -Descending | Select-Object -First 20
 
-# --- [4. 合併 AutoTask 日誌] ---
-Write-Host "3. 合併 AutoTask 日誌 (24h)..."
-Merge-Files -SourcePath "$BaseDir\Logs" -Filter "*.log" -OutputFile (New-Item "$TempDir\4_Logs_AutoTask.txt" -Force) -HeaderMsg "AutoTask System Logs (Last 24h)"
-
-# --- [5. 合併外部程式日誌] ---
-Write-Host "4. 偵測並合併 BetterGI 與 1Remote 日誌..."
-
-$BetterGI_Path = "C:\Program Files\BetterGI"
-$OneRemote_Path = $null
-if (Test-Path "$BaseDir\Configs\EnvConfig.json") {
+foreach ($File in $LogFiles) {
+    $SizeMB = [math]::Round($File.Length/1MB, 2)
+    $LogContent += "`r`n" + ("=" * 70) + "`r`n"
+    $LogContent += "FILE: $($File.Name)`r`nPATH: $($File.FullName)`r`nTIME: $($File.LastWriteTime)`r`nSIZE: $SizeMB MB`r`n"
+    $LogContent += ("=" * 70) + "`r`n"
+    
     try {
-        $env = Get-Content "$BaseDir\Configs\EnvConfig.json" -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($env.Path1Remote) { $OneRemote_Path = Split-Path $env.Path1Remote -Parent }
-    } catch {}
+        if ($File.Length -gt $LogSizeThreshold) {
+            Write-Host "    [截斷警告] $($File.Name) 大小 ($SizeMB MB) 超過閾值，僅保留頭尾..." -ForegroundColor Yellow
+            $Head = Get-Content $File.FullName -Head $LogHeadLines -Encoding UTF8
+            $Tail = Get-Content $File.FullName -Tail $LogTailLines -Encoding UTF8
+            
+            $LogContent += ($Head -join "`r`n") + "`r`n"
+            $LogContent += "`r`n... [FILE TOO LARGE - CONTENT TRUNCATED] ...`r`n`r`n"
+            $LogContent += ($Tail -join "`r`n") + "`r`n"
+        } else {
+            # 5MB 以下直接完整讀取
+            $LogContent += (Get-Content $File.FullName -Raw -Encoding UTF8) + "`r`n"
+        }
+    } catch {
+        $LogContent += "[讀取檔案時發生錯誤: $_]`r`n"
+    }
 }
+Set-Content -Path "$SnapshotDir\3_Recent_Logs.txt" -Value $LogContent -Encoding UTF8
 
-# BetterGI
-$BGFile = New-Item "$TempDir\5_Logs_BetterGI.txt" -Force
-"=== BetterGI User Config ===" | Set-Content $BGFile -Encoding UTF8
-if (Test-Path "$BetterGI_Path\User\config.json") { Get-Content "$BetterGI_Path\User\config.json" -Raw | Add-Content $BGFile -Encoding UTF8 }
-Merge-Files -SourcePath "$BetterGI_Path\log" -Filter "*.log" -OutputFile $BGFile -HeaderMsg "BetterGI Logs (Last 24h)"
+# 5. 壓縮
+Write-Host " -> 正在壓縮..."
+Compress-Archive -Path "$SnapshotDir\*" -DestinationPath $ZipFile -Force
+Remove-Item -Path $SnapshotDir -Recurse -Force
 
-# 1Remote
-if ($OneRemote_Path -and (Test-Path $OneRemote_Path)) {
-    Merge-Files -SourcePath "$OneRemote_Path\.logs" -Filter "*.log","*.md" -OutputFile (New-Item "$TempDir\6_Logs_1Remote.txt" -Force) -HeaderMsg "1Remote Logs (Last 24h)"
-}
-
-# --- [6. 生成目錄結構樹] ---
-Write-Host "5. 生成檔案結構樹..."
-$TreeFile = "$TempDir\0_File_Structure.txt"
-"=== AutoTask Directory Structure ===" | Set-Content $TreeFile -Encoding UTF8
-Get-ChildItem $BaseDir -Recurse | Select-Object FullName, LastWriteTime, Length | Out-String | Add-Content $TreeFile -Encoding UTF8
-
-# --- [7. 壓縮打包] ---
-Write-Host "6. 正在壓縮..." -ForegroundColor Yellow
-$CompressScript = {
-    param($src, $dest)
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    [System.IO.Compression.ZipFile]::CreateFromDirectory($src, $dest)
-}
-& $CompressScript -src $TempDir -dest $ZipPath
-
-# --- [8. 清理] ---
-Remove-Item $TempDir -Recurse -Force
-
-Write-Host "`n✅ [完成]" -ForegroundColor Green
-Write-Host "   檔案: $ZipName" -ForegroundColor Cyan
-Write-Host "   路徑: $ZipPath" -ForegroundColor Gray
-Pause
+Write-Host ">>> 快照製作完成！" -ForegroundColor Green
+Write-Host "檔案: $ZipFile" -ForegroundColor Yellow
+Invoke-Item $ZipFile
+Start-Sleep -Seconds 2
