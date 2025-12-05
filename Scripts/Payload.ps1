@@ -1,5 +1,5 @@
 ﻿# =============================================================================
-# AutoTask Payload V5.23 - 狀態變更通知增強版
+# AutoTask Payload V5.24 - ForceEnd 邏輯修正版
 # =============================================================================
 $ErrorActionPreference = "Stop"
 trap {
@@ -69,7 +69,7 @@ function Write-Log {
 }
 
 # --- [1. 啟動前安全檢查] ---
-Write-Log "Payload 啟動 (V5.23) PID: $PID..." "Cyan"
+Write-Log "Payload 啟動 (V5.24) PID: $PID..." "Cyan"
 
 try {
     $CurrentPID = $PID
@@ -184,17 +184,31 @@ if ($CurrentTime.Hour -ge 4) { $TodayLimit = $TodayLimit.AddDays(1) }
 $ForceEndStart = $TodayLimit.AddMinutes(-30)
 
 if ($CurrentTime -ge $ForceEndStart -and $CurrentTime -lt $TodayLimit) {
-    Check-Network
-    $BgProc = Get-Process "BetterGI" -ErrorAction SilentlyContinue; $GiProc = Get-Process "GenshinImpact" -ErrorAction SilentlyContinue
-    if ($BgProc -or $GiProc) {
-        Write-Log "執行 ForceEnd..." "Yellow"
-        Stop-Process -Name "BetterGI" -Force -ErrorAction SilentlyContinue; Stop-Process -Name "GenshinImpact" -Force -ErrorAction SilentlyContinue
-        Start-Sleep 3
-        $AppliedForce = Set-BetterGIResinConfig "forceend"
-        $ForceProc = Start-Process -FilePath $BettergiExe -ArgumentList "--startOneDragon ""forceend""" -WorkingDirectory $BettergiDir -PassThru
-        while (-not $ForceProc.HasExited) { if ((Get-Date) -ge $TodayLimit) { $ForceProc.Kill(); break }; Start-Sleep 2; $ForceProc.Refresh() }
-        if ($AppliedForce) { Restore-BetterGIConfig }; Stop-Process -Name "BetterGI" -Force -ErrorAction SilentlyContinue; Stop-Process -Name "GenshinImpact" -Force -ErrorAction SilentlyContinue
-        Start-Sleep 2
+    
+    # [新增] 檢查今日任務是否已完成 (LastRun)，若已完成則跳過 ForceEnd
+    # 避免 03:55 自動登入時，因程序自動啟動而被誤判為卡死
+    $SkipForceEnd = $false
+    if (Test-Path $LastRunLog) {
+        $LastRunDate = (Get-Content $LastRunLog -ErrorAction SilentlyContinue).Trim()
+        if ($LastRunDate -eq $CurrentDateStr) { 
+            $SkipForceEnd = $true 
+            Write-Log "診斷: 今日($CurrentDateStr)任務已於先前完成 (LastRun)，跳過 ForceEnd 檢查。" "Gray"
+        }
+    }
+
+    if (-not $SkipForceEnd) {
+        Check-Network
+        $BgProc = Get-Process "BetterGI" -ErrorAction SilentlyContinue; $GiProc = Get-Process "GenshinImpact" -ErrorAction SilentlyContinue
+        if ($BgProc -or $GiProc) {
+            Write-Log "執行 ForceEnd..." "Yellow"
+            Stop-Process -Name "BetterGI" -Force -ErrorAction SilentlyContinue; Stop-Process -Name "GenshinImpact" -Force -ErrorAction SilentlyContinue
+            Start-Sleep 3
+            $AppliedForce = Set-BetterGIResinConfig "forceend"
+            $ForceProc = Start-Process -FilePath $BettergiExe -ArgumentList "--startOneDragon ""forceend""" -WorkingDirectory $BettergiDir -PassThru
+            while (-not $ForceProc.HasExited) { if ((Get-Date) -ge $TodayLimit) { $ForceProc.Kill(); break }; Start-Sleep 2; $ForceProc.Refresh() }
+            if ($AppliedForce) { Restore-BetterGIConfig }; Stop-Process -Name "BetterGI" -Force -ErrorAction SilentlyContinue; Stop-Process -Name "GenshinImpact" -Force -ErrorAction SilentlyContinue
+            Start-Sleep 2
+        }
     }
 }
 
