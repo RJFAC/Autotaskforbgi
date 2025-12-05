@@ -1,7 +1,10 @@
 ﻿# =======================================================
 # 檔案名稱: Task_Snapshot.ps1
-# 功能: 製作 AutoTask 完整系統快照 (GUI 整合修復版 v2)
-# 更新: 修復 BetterGI 日誌未被包含的問題、加入大檔案截斷保護
+# 功能: 製作 AutoTask 完整系統快照 (GUI 整合修復版 v2.1)
+# 更新: 
+#   1. 修復 BetterGI 日誌未被包含的問題
+#   2. 加入大檔案截斷保護
+#   3. [新增] 納入 .md 與 .txt 文件 (備份邏輯分析報告)
 # =======================================================
 $ErrorActionPreference = "SilentlyContinue"
 $BaseDir = "C:\AutoTask"
@@ -21,11 +24,16 @@ New-Item -Path $SnapshotDir -ItemType Directory -Force | Out-Null
 Write-Host " -> [1/5] 掃描檔案結構..."
 Get-ChildItem -Path $BaseDir -Recurse | Select-Object FullName | Out-String | Set-Content "$SnapshotDir\0_File_Structure.txt" -Encoding UTF8
 
-# 2. 腳本檔案 (完整內容)
-Write-Host " -> [2/5] 備份腳本內容..."
-$ScriptContent = "=== [ AutoTask Scripts Snapshot ] ===`r`n"
-$ScriptFiles = Get-ChildItem -Path "$BaseDir\Scripts", "$BaseDir" -Include *.ps1, *.bat -Recurse
+# 2. 腳本檔案 (包含 .ps1, .bat, .md, .txt)
+Write-Host " -> [2/5] 備份腳本與說明文件..."
+$ScriptContent = "=== [ AutoTask Scripts & Docs Snapshot ] ===`r`n"
+# [更新] 增加 *.md 與 *.txt 以包含邏輯分析文件
+$ScriptFiles = Get-ChildItem -Path "$BaseDir\Scripts", "$BaseDir" -Include *.ps1, *.bat, *.md, *.txt -Recurse
+
 foreach ($File in $ScriptFiles) {
+    # 跳過 Snapshot 自身產生的暫存檔與 Hash 檔，避免混淆
+    if ($File.Name -match "Snapshot|File_Structure|ScriptHash") { continue }
+
     if ($File.Length -lt 5000000) { 
         $ScriptContent += "`r`n" + ("=" * 70) + "`r`n"
         $ScriptContent += "FILE: $($File.Name) | PATH: $($File.FullName)`r`n"
@@ -71,7 +79,7 @@ if (Test-Path $BetterGIDefault) {
     Write-Host "    - 偵測到 BetterGI 日誌目錄，已加入掃描。" -ForegroundColor Gray
     $LogSearchPaths += $BetterGIDefault 
 } else {
-    Write-Host "    -⚠️ 未偵測到預設 BetterGI 日誌目錄 ($BetterGIDefault)" -ForegroundColor Yellow
+    Write-Host "    ⚠️ 未偵測到預設 BetterGI 日誌目錄 ($BetterGIDefault)" -ForegroundColor Yellow
 }
 
 # 增加擷取數量至 25 個，並包含 .log, .md
