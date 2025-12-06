@@ -1,5 +1,5 @@
 ﻿# =============================================================================
-# AutoTask Payload V5.24 - ForceEnd 邏輯修正版
+# AutoTask Payload V5.26 - Smart Logoff Logic
 # =============================================================================
 $ErrorActionPreference = "Stop"
 trap {
@@ -69,7 +69,7 @@ function Write-Log {
 }
 
 # --- [1. 啟動前安全檢查] ---
-Write-Log "Payload 啟動 (V5.24) PID: $PID..." "Cyan"
+Write-Log "Payload 啟動 (V5.26) PID: $PID..." "Cyan"
 
 try {
     $CurrentPID = $PID
@@ -110,60 +110,21 @@ function Check-Network { $r=0; while($r-lt 12){if(Test-Connection "8.8.8.8" -Cou
 function Send-Notify { param($t,$m,$c); if(Test-Path $NotifyScript){Start-Process powershell -Arg "-ExecutionPolicy Bypass -File `"$NotifyScript`" -Title `"$t`" -Message `"$m`" -Color `"$c`"" -WindowStyle Hidden} }
 function Backup-Logs { $t=Get-Date -Format "yyyyMMdd_HHmmss";$d="$BackupRootDir\Failed_$t";New-Item $d -ItemType Directory -Force|Out-Null;$l=(Get-Date).AddHours(-24);$da=New-Item "$d\AutoTask_Logs" -ItemType Directory;Get-ChildItem $LogDir -Filter "*.log"|Where{$_.LastWriteTime-gt$l}|Copy-Item -Dest $da -Force;$db=New-Item "$d\BetterGI_Logs" -ItemType Directory;Get-ChildItem $LogDirBG -Filter "*.log"|Where{$_.LastWriteTime-gt$l}|Copy-Item -Dest $db -Force;if($1RemoteLogDir-and(Test-Path $1RemoteLogDir)){$dr=New-Item "$d\1Remote_Logs" -ItemType Directory;Get-ChildItem $1RemoteLogDir -Include "*.md","*.log" -Recurse|Where{$_.LastWriteTime-gt$l}|Copy-Item -Dest $dr -Force};return $d }
 
-# [核心修改] 狀態更新函數 (含自動通知)
+# 狀態更新函數
 function Update-Status { 
     param($s, $r)
     try {
         $DateStr = (Get-Date).AddHours(-4).ToString("yyyyMMdd")
-        $NewObj = @{
-            Date = $DateStr
-            Status = $s
-            RetryCount = $r
-            LastUpdate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-        }
-        
-        # 讀取舊狀態 (用於比對)
-        $OldStatus = $null
-        $OldRetry = -1
+        $NewObj = @{ Date = $DateStr; Status = $s; RetryCount = $r; LastUpdate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss") }
+        $OldStatus = $null; $OldRetry = -1
         if (Test-Path $TaskStatusFile) {
-            try {
-                $OldObj = Get-Content $TaskStatusFile -Raw -Encoding UTF8 | ConvertFrom-Json
-                # 確保是同一天的任務才比較，否則視為新開始
-                if ($OldObj.Date -eq $DateStr) {
-                    $OldStatus = $OldObj.Status
-                    $OldRetry = $OldObj.RetryCount
-                }
-            } catch {}
+            try { $OldObj = Get-Content $TaskStatusFile -Raw -Encoding UTF8 | ConvertFrom-Json; if ($OldObj.Date -eq $DateStr) { $OldStatus = $OldObj.Status; $OldRetry = $OldObj.RetryCount } } catch {}
         }
-        
-        # 寫入新狀態
         $NewObj | ConvertTo-Json | Set-Content $TaskStatusFile -Encoding UTF8
-
-        # --- [狀態變更通知邏輯] ---
-        # 觸發條件: 狀態字串改變 OR (狀態是 Running 且 重試次數增加)
         if (($OldStatus -ne $s) -or ($s -eq "Running" -and $OldRetry -ne $r)) {
-            
-            $Color = "Blue"
-            $Title = "📝 狀態更新"
-            $Icon = "ℹ️"
-            
-            if ($s -match "Success") { 
-                $Color = "Green"; $Title = "✅ 任務完成"; $Icon = "✅" 
-            } elseif ($s -match "Failed") { 
-                $Color = "Red"; $Title = "❌ 任務失敗"; $Icon = "❌" 
-            } elseif ($s -match "Running") { 
-                $Color = "Blue"; $Title = "▶️ 任務執行中"; $Icon = "🚀" 
-            } elseif ($s -match "Waiting") { 
-                $Color = "Yellow"; $Title = "⏳ 等待任務時間"; $Icon = "💤" 
-            } elseif ($s -match "Maintenance") { 
-                $Color = "Yellow"; $Title = "🚧 系統維護中"; $Icon = "🔧" 
-            } elseif ($s -match "Paused") { 
-                $Color = "Yellow"; $Title = "⛔ 今日已暫停"; $Icon = "⏸️" 
-            }
-
-            $Msg = "$Icon 目前狀態: $s"
-            if ($r -gt 0) { $Msg += "`n🔄 重試次數: $r" }
-
+            $Color = "Blue"; $Title = "📝 狀態更新"; $Icon = "ℹ️"
+            if ($s -match "Success") { $Color = "Green"; $Title = "✅ 任務完成"; $Icon = "✅" } elseif ($s -match "Failed") { $Color = "Red"; $Title = "❌ 任務失敗"; $Icon = "❌" } elseif ($s -match "Running") { $Color = "Blue"; $Title = "▶️ 任務執行中"; $Icon = "🚀" } elseif ($s -match "Waiting") { $Color = "Yellow"; $Title = "⏳ 等待任務時間"; $Icon = "💤" } elseif ($s -match "Maintenance") { $Color = "Yellow"; $Title = "🚧 系統維護中"; $Icon = "🔧" } elseif ($s -match "Paused") { $Color = "Yellow"; $Title = "⛔ 今日已暫停"; $Icon = "⏸️" }
+            $Msg = "$Icon 目前狀態: $s"; if ($r -gt 0) { $Msg += "`n🔄 重試次數: $r" }
             Send-Notify $Title $Msg $Color
         }
     } catch {} 
@@ -184,26 +145,18 @@ if ($CurrentTime.Hour -ge 4) { $TodayLimit = $TodayLimit.AddDays(1) }
 $ForceEndStart = $TodayLimit.AddMinutes(-30)
 
 if ($CurrentTime -ge $ForceEndStart -and $CurrentTime -lt $TodayLimit) {
-    
-    # [新增] 檢查今日任務是否已完成 (LastRun)，若已完成則跳過 ForceEnd
-    # 避免 03:55 自動登入時，因程序自動啟動而被誤判為卡死
     $SkipForceEnd = $false
     if (Test-Path $LastRunLog) {
         $LastRunDate = (Get-Content $LastRunLog -ErrorAction SilentlyContinue).Trim()
-        if ($LastRunDate -eq $CurrentDateStr) { 
-            $SkipForceEnd = $true 
-            Write-Log "診斷: 今日($CurrentDateStr)任務已於先前完成 (LastRun)，跳過 ForceEnd 檢查。" "Gray"
-        }
+        if ($LastRunDate -eq $CurrentDateStr) { $SkipForceEnd = $true; Write-Log "診斷: 今日已完成，跳過 ForceEnd。" "Gray" }
     }
-
     if (-not $SkipForceEnd) {
         Check-Network
         $BgProc = Get-Process "BetterGI" -ErrorAction SilentlyContinue; $GiProc = Get-Process "GenshinImpact" -ErrorAction SilentlyContinue
         if ($BgProc -or $GiProc) {
             Write-Log "執行 ForceEnd..." "Yellow"
             Stop-Process -Name "BetterGI" -Force -ErrorAction SilentlyContinue; Stop-Process -Name "GenshinImpact" -Force -ErrorAction SilentlyContinue
-            Start-Sleep 3
-            $AppliedForce = Set-BetterGIResinConfig "forceend"
+            Start-Sleep 3; $AppliedForce = Set-BetterGIResinConfig "forceend"
             $ForceProc = Start-Process -FilePath $BettergiExe -ArgumentList "--startOneDragon ""forceend""" -WorkingDirectory $BettergiDir -PassThru
             while (-not $ForceProc.HasExited) { if ((Get-Date) -ge $TodayLimit) { $ForceProc.Kill(); break }; Start-Sleep 2; $ForceProc.Refresh() }
             if ($AppliedForce) { Restore-BetterGIConfig }; Stop-Process -Name "BetterGI" -Force -ErrorAction SilentlyContinue; Stop-Process -Name "GenshinImpact" -Force -ErrorAction SilentlyContinue
@@ -217,14 +170,10 @@ $TargetTime = $TodayLimit
 if ($CurrentTime.Hour -eq 3) { 
     while ((Get-Date) -lt $TargetTime) { 
         $Span = $TargetTime - (Get-Date)
-        if ($Span.Seconds % 60 -eq 0) { 
-            Write-Log "等待 04:00... 剩餘 $($Span.Minutes) 分" "Gray" 
-            Update-Status "Waiting(04:00)" 0
-        }
+        if ($Span.Seconds % 60 -eq 0) { Write-Log "等待 04:00... 剩餘 $($Span.Minutes) 分" "Gray"; Update-Status "Waiting(04:00)" 0 }
         Start-Sleep 1 
     } 
-    $CurrentDateObj = (Get-Date).AddHours(-4)
-    $CurrentDateStr = $CurrentDateObj.ToString("yyyyMMdd")
+    $CurrentDateObj = (Get-Date).AddHours(-4); $CurrentDateStr = $CurrentDateObj.ToString("yyyyMMdd")
     Write-Log "已過 04:00，重新計算日期: $CurrentDateStr" "Cyan"
 }
 
@@ -233,28 +182,20 @@ Cleanup-Screenshots
 
 # ForceRun 標記檢查
 $IsForceRun = $false
-if (Test-Path $ForceRunFlag) { 
-    Write-Log "偵測到 ForceRun (保留標記以支援救援重啟)" "Magenta"
-    $IsForceRun = $true 
-}
+if (Test-Path $ForceRunFlag) { Write-Log "偵測到 ForceRun (保留標記以支援救援重啟)" "Magenta"; $IsForceRun = $true }
 
+# --- [關鍵修改邏輯 1: 啟動前檢查 (情境 B: 使用者再登入)] ---
 if (-not $IsForceRun) {
     if ((Test-Path $PauseLog) -and ((Get-Content $PauseLog) -contains $CurrentDateStr)) { 
         Write-Log "今日設定為暫停。腳本結束 (保留連線)。" "Yellow"
-        Update-Status "Paused" 0
-        New-Item $DoneFlag -Force | Out-Null
-        exit 
+        Update-Status "Paused" 0; New-Item $DoneFlag -Force | Out-Null
+        exit # 這裡使用 Exit，讓使用者保持登入
     }
     
     if ((Test-Path $LastRunLog) -and ((Get-Content $LastRunLog) -eq $CurrentDateStr)) { 
-        Write-Log "今日任務已完成。" "Green"
-        Update-Status "Success" 0
-        New-Item $DoneFlag -Force | Out-Null
-        
-        Write-Log "任務目標已達成，執行快速登出..." "Yellow"
-        Start-Sleep 2
-        logoff
-        exit 
+        Write-Log "今日任務已完成 (LastRun)。偵測為使用者手動登入，腳本直接退出。" "Green"
+        Update-Status "Success" 0; New-Item $DoneFlag -Force | Out-Null
+        exit # 這裡使用 Exit，絕對不能執行 Logoff
     }
 } else {
     Write-Log "診斷: 處於 ForceRun 模式，強制跳過 LastRun 檢查。" "Gray"
@@ -266,10 +207,7 @@ if ($IsUpdateDay -and -not $IsForceRun) {
     if ((Get-Date) -lt $UpdateResumeTime) {
         Write-Log "⚠️ 版本更新日！待機至 11:30" "Magenta"; Send-Notify -Title "版本更新" -Msg "系統待機" -Color "Yellow"
         Check-GenshinPreDownload
-        while ((Get-Date) -lt $UpdateResumeTime) { 
-            Start-Sleep 60 
-            Update-Status "Maintenance" 0
-        }
+        while ((Get-Date) -lt $UpdateResumeTime) { Start-Sleep 60; Update-Status "Maintenance" 0 }
         Write-Log "維護結束。" "Green"
     }
 }
@@ -278,24 +216,16 @@ $RetryCount = 0
 $ConfigName = Get-TargetConfig
 $ConfigQueue = $ConfigName -split ","
 
-if (-not (Test-Path $BettergiExe)) {
-    Write-Log "⛔ 錯誤：找不到 BetterGI ($BettergiExe)！" "Red"
-    Send-Notify "執行失敗" "找不到 BetterGI" "Red"
-    exit
-}
+if (-not (Test-Path $BettergiExe)) { Write-Log "⛔ 錯誤：找不到 BetterGI ($BettergiExe)！" "Red"; Send-Notify "執行失敗" "找不到 BetterGI" "Red"; exit }
 
 Check-Network
 if (-not (Check-Network)) { $ErrorType = "NetworkError" }
-
-# [新增] 啟動通知
 Send-Notify "任務啟動" "偵測配置: $ConfigName `nPID: $PID" "Blue"
 
 while ($RetryCount -le $MaxRetries) {
-    
     Update-Status "Running" $RetryCount
     $AllConfigSuccess = $true
     $ErrorType = ""
-    
     $PreCheckBG = Get-Process "BetterGI" -ErrorAction SilentlyContinue
     if ($PreCheckBG) { Write-Log "診斷: 啟動前偵測到殘留 BetterGI (PID: $($PreCheckBG.Id))" "Gray" }
     
@@ -304,30 +234,22 @@ while ($RetryCount -le $MaxRetries) {
         if ((Get-Item $SelfPath).LastWriteTime -ne $InitialWriteTime) { Write-Log "♻️ 腳本更新，重啟..." "Magenta"; Restore-BetterGIConfig; exit }
 
         Write-Log ">>> 執行: [$CurrentConfig]" "Cyan"
-        
         $SkipStart = $false
         $BgProc = Get-Process "BetterGI" -ErrorAction SilentlyContinue
         if ($BgProc) {
             $RecentLog = Get-ChildItem $LogDirBG -Filter "better-genshin-impact*.log" | Sort LastWriteTime -Desc | Select -First 1
-            if ($RecentLog -and $RecentLog.LastWriteTime -gt (Get-Date).AddMinutes(-5)) {
-                Write-Log "熱修復: 接手監控..." "Yellow"; $SkipStart = $true
-            } else {
-                Write-Log "BetterGI 殭屍程序，清理。" "Red"; Stop-Process -Name "BetterGI" -Force -ErrorAction SilentlyContinue
-            }
+            if ($RecentLog -and $RecentLog.LastWriteTime -gt (Get-Date).AddMinutes(-5)) { Write-Log "熱修復: 接手監控..." "Yellow"; $SkipStart = $true } else { Write-Log "BetterGI 殭屍程序，清理。" "Red"; Stop-Process -Name "BetterGI" -Force -ErrorAction SilentlyContinue }
         }
 
         if (-not $SkipStart) {
             $ConfigChanged = Set-BetterGIResinConfig $CurrentConfig
             Stop-Process -Name "BetterGI" -Force -ErrorAction SilentlyContinue
             if ($RetryCount -gt 0) { Write-Log "重試: 重啟遊戲..." "Yellow"; Stop-Process -Name "GenshinImpact" -Force -ErrorAction SilentlyContinue }
-            Start-Sleep 3
-            Start-Process -FilePath $BettergiExe -ArgumentList "--startOneDragon ""$CurrentConfig""" -WorkingDirectory $BettergiDir
+            Start-Sleep 3; Start-Process -FilePath $BettergiExe -ArgumentList "--startOneDragon ""$CurrentConfig""" -WorkingDirectory $BettergiDir
         }
 
-        $WatchdogStart = Get-Date
-        $IsSuccess = $false; $IsFailed = $false
+        $WatchdogStart = Get-Date; $IsSuccess = $false; $IsFailed = $false
         $HeartbeatLimit = if ($IsUpdateDay) { 60 } else { 15 }
-        
         $LogFile = $null
         for ($i=0; $i -lt 90; $i++) {
             $Candidate = Get-ChildItem $LogDirBG -Filter "better-genshin-impact*.log" | Sort LastWriteTime -Desc | Select -First 1
@@ -336,110 +258,70 @@ while ($RetryCount -le $MaxRetries) {
         }
 
         if (-not $LogFile) { 
-            Write-Log "錯誤：日誌鎖定失敗！" "Red"
-            $IsFailed = $true 
-            $ErrorType = "LogLockFail"
-            Write-Log "--- [診斷資訊: 目錄掃描] ---" "Gray"
-            try { Get-ChildItem $LogDirBG -Filter "better-genshin-impact*.log" | Select Name, LastWriteTime | Out-String | Write-Host } catch {}
-            Write-Log "----------------------------" "Gray"
+            Write-Log "錯誤：日誌鎖定失敗！" "Red"; $IsFailed = $true; $ErrorType = "LogLockFail"
+            Write-Log "--- [診斷資訊: 目錄掃描] ---" "Gray"; try { Get-ChildItem $LogDirBG -Filter "better-genshin-impact*.log" | Select Name, LastWriteTime | Out-String | Write-Host } catch {}; Write-Log "----------------------------" "Gray"
         } else {
-            $LogPath = $LogFile.FullName
-            $StartOffset = 0
-            try { $StartOffset = (Get-Item $LogPath).Length } catch {}
+            $LogPath = $LogFile.FullName; $StartOffset = 0; try { $StartOffset = (Get-Item $LogPath).Length } catch {}
             Write-Log "鎖定日誌: $($LogFile.Name) (初始 Offset: $StartOffset)" "Cyan"
             
             while (-not $IsSuccess -and -not $IsFailed) {
                 Start-Sleep 5
-                
                 $NewContent = ""
                 try {
-                    $LogFile.Refresh()
-                    $CurrentSize = $LogFile.Length
+                    $LogFile.Refresh(); $CurrentSize = $LogFile.Length
                     if ($CurrentSize -gt $StartOffset) {
-                        $Stream = [System.IO.File]::Open($LogPath, 'Open', 'Read', 'ReadWrite')
-                        $Reader = New-Object System.IO.StreamReader($Stream, [System.Text.Encoding]::UTF8)
-                        $null = $Reader.BaseStream.Seek($StartOffset, [System.IO.SeekOrigin]::Begin)
-                        $NewContent = $Reader.ReadToEnd()
-                        $Reader.Close(); $Stream.Close()
-                        $StartOffset = $CurrentSize
+                        $Stream = [System.IO.File]::Open($LogPath, 'Open', 'Read', 'ReadWrite'); $Reader = New-Object System.IO.StreamReader($Stream, [System.Text.Encoding]::UTF8)
+                        $null = $Reader.BaseStream.Seek($StartOffset, [System.IO.SeekOrigin]::Begin); $NewContent = $Reader.ReadToEnd()
+                        $Reader.Close(); $Stream.Close(); $StartOffset = $CurrentSize
                     }
                 } catch { Write-Log "讀取日誌警告: $_" "Yellow" }
 
-                if ($NewContent -match "$SuccessKeyword|全部完成") {
-                     Write-Log "偵測到完成訊號！(觸發: '$($matches[0])')" "Green"
-                     $IsSuccess = $true; break 
-                }
-                
+                if ($NewContent -match "$SuccessKeyword|全部完成") { Write-Log "偵測到完成訊號！(觸發: '$($matches[0])')" "Green"; $IsSuccess = $true; break }
                 if (-not (Get-Process "BetterGI" -ErrorAction SilentlyContinue)) {
                     Start-Sleep 3
                     if (-not (Get-Process "BetterGI" -ErrorAction SilentlyContinue)) {
                          Write-Log "BetterGI 進程已結束，檢查最後狀態..." "Yellow"
-                         if ($NewContent -match "$SuccessKeyword|全部完成") {
-                             Write-Log "完成(進程結束)。" "Green"; $IsSuccess=$true
-                         } else {
-                             Write-Log "意外退出！(未偵測到成功訊號)" "Red"; $IsFailed=$true; $ErrorType = "ProcessCrash"
-                         }
+                         if ($NewContent -match "$SuccessKeyword|全部完成") { Write-Log "完成(進程結束)。" "Green"; $IsSuccess=$true } else { Write-Log "意外退出！(未偵測到成功訊號)" "Red"; $IsFailed=$true; $ErrorType = "ProcessCrash" }
                          break
                     }
                 }
-                 
-                $LogFile.Refresh()
-                if (((Get-Date) - $LogFile.LastWriteTime).TotalMinutes -gt $HeartbeatLimit) { Write-Log "卡死判定！(日誌靜止超過 $HeartbeatLimit 分)" "Red"; $IsFailed=$true; $ErrorType = "HeartbeatTimeout" }
+                $LogFile.Refresh(); if (((Get-Date) - $LogFile.LastWriteTime).TotalMinutes -gt $HeartbeatLimit) { Write-Log "卡死判定！(日誌靜止超過 $HeartbeatLimit 分)" "Red"; $IsFailed=$true; $ErrorType = "HeartbeatTimeout" }
             }
         }
 
         if ($ConfigChanged -or $SkipStart) { Restore-BetterGIConfig }
-        if (-not $IsSuccess) { 
-            # [新增] 具體錯誤通知
-            $ErrDetail = if($ErrorType){$ErrorType}else{"CheckLog"}
-            Send-Notify "執行異常" "設定 [$CurrentConfig] 失敗。`n原因: $ErrDetail" "Yellow"
-            $AllConfigSuccess = $false; break 
-        }
+        if (-not $IsSuccess) { $ErrDetail = if($ErrorType){$ErrorType}else{"CheckLog"}; Send-Notify "執行異常" "設定 [$CurrentConfig] 失敗。`n原因: $ErrDetail" "Yellow"; $AllConfigSuccess = $false; break }
         Start-Sleep 5
     }
 
+    # --- [關鍵修改邏輯 2: 任務完成區 (情境 A: 任務剛完成)] ---
     if ($AllConfigSuccess) {
-        try {
-            if ($StartTime) {
-                $Duration = New-TimeSpan -Start $StartTime -End (Get-Date)
-                $DurStr = "{0:hh}時{0:mm}分" -f $Duration
-            } else { $DurStr = "未知" }
-        } catch { $DurStr = "未知(CalcErr)" }
-
+        try { if ($StartTime) { $Duration = New-TimeSpan -Start $StartTime -End (Get-Date); $DurStr = "{0:hh}時{0:mm}分" -f $Duration } else { $DurStr = "未知" } } catch { $DurStr = "未知(CalcErr)" }
         Write-Log ">>> 全部完成。耗時: $DurStr" "Green"
         Send-Notify "Success" "Config: $ConfigName" "Green"
         Update-Status "Success" $RetryCount
+        
+        # 寫入 LastRun 代表本日任務正式結束
         Set-Content $LastRunLog -Value $CurrentDateStr
         while (Get-Process "GenshinImpact" -ErrorAction SilentlyContinue) { Stop-Process -Name "GenshinImpact" -Force; Start-Sleep 5 }
         New-Item $DoneFlag -Force | Out-Null
         
-        if ($IsForceRun) { 
-            Remove-Item $ForceRunFlag -Force -ErrorAction SilentlyContinue
-            Write-Log "任務成功，清理 ForceRun 標記。" "Gray"
-        }
-
-        if ($IsForceRun) { Start-Sleep 10 } else { Start-Sleep 3 }
+        if ($IsForceRun) { Remove-Item $ForceRunFlag -Force -ErrorAction SilentlyContinue; Write-Log "任務成功，清理 ForceRun 標記。" "Gray"; Start-Sleep 10 } else { Start-Sleep 3 }
+        
+        # 任務正常跑完，執行 Logoff 以斷開連線 (符合無人值守原則)
+        Write-Log "任務完成，正在登出..." "Cyan"
         logoff
         exit
     } else {
-        # [新增] 中途報錯通知 (準備重試)
         $CurrentErr = if($ErrorType){$ErrorType}else{"未知錯誤"}
         Send-Notify "任務重試 ($($RetryCount+1)/$MaxRetries)" "偵測到異常，準備重試。`n原因: $CurrentErr" "Yellow"
-
         $RetryCount++
         if ($RetryCount -gt $MaxRetries) {
-            $BackupPath = Backup-Logs
-            $Diagnosis = Get-Error-Diagnosis $ErrorType $LogFile
+            $BackupPath = Backup-Logs; $Diagnosis = Get-Error-Diagnosis $ErrorType $LogFile
             Send-Notify-With-Diagnosis "Fail" $BackupPath "Red" $Diagnosis
-            Update-Status "Failed" $RetryCount
-            New-Item $FailFlag -Force | Out-Null
-            
-            if ($IsForceRun) { 
-                Remove-Item $ForceRunFlag -Force -ErrorAction SilentlyContinue
-                Write-Log "任務失敗 (達最大重試)，清理 ForceRun 標記。" "Gray"
-            }
-
-            if ($IsForceRun) { Start-Sleep 10 } else { Start-Sleep 3 }
+            Update-Status "Failed" $RetryCount; New-Item $FailFlag -Force | Out-Null
+            if ($IsForceRun) { Remove-Item $ForceRunFlag -Force -ErrorAction SilentlyContinue; Write-Log "任務失敗，清理 ForceRun。" "Gray"; Start-Sleep 10 } else { Start-Sleep 3 }
+            Write-Log "達到最大重試次數，強制登出..." "Red"
             logoff
             exit
         }
