@@ -7,6 +7,7 @@
     1. 包含 ToUniversalTime() 修復，解決 Discord 顯示未來時間的問題。
     2. 包含 Dashboard 測試時自動載入 Config 的功能。
     3. 包含防閃退與日誌功能。
+    4. [New] 包含 UTF-8 編碼強制設定，解決中文變問號的問題。
 #>
 
 # [Log] 定義日誌輸出函式 (防止無主程式時報錯)
@@ -70,7 +71,6 @@ function Send-DiscordNotification {
     $ColorCode = if ($ColorMap.ContainsKey($Color)) { $ColorMap[$Color] } else { 3447003 }
 
     # [Fix] 3. 建構 Payload (關鍵修復：轉為 UTC 時間)
-    # 這就是剛剛測試 B 成功的關鍵邏輯
     $Payload = @{
         username = "AutoTask Bot"
         embeds = @(
@@ -84,7 +84,11 @@ function Send-DiscordNotification {
     }
 
     try {
-        $Response = Invoke-RestMethod -Uri $WebhookUrl -Method Post -ContentType 'application/json' -Body ($Payload | ConvertTo-Json -Depth 10) -ErrorAction Stop
+        # [Fix] 4. 強制 UTF-8 編碼 (解決中文變問號的問題)
+        # 加入 charset=utf-8 讓 Discord 正確識別中文字元
+        $JsonBody = $Payload | ConvertTo-Json -Depth 10
+        $Response = Invoke-RestMethod -Uri $WebhookUrl -Method Post -ContentType 'application/json; charset=utf-8' -Body $JsonBody -ErrorAction Stop
+        
         Write-Log "[Notify] Success: Notification sent."
     }
     Catch {
