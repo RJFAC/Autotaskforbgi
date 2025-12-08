@@ -1,11 +1,11 @@
 ﻿<#
     .SYNOPSIS
-    Discord Webhook 通知模組 (修復版 V2.1)
+    Discord Webhook 通知模組 (V2.2 Stable)
     .DESCRIPTION
-    已修復字串引號巢狀導致的語法錯誤，並包含 Send-AutoTaskReport 函數。
+    修復字串轉義問題，採用拼接方式處理 Markdown 語法。
 #>
 
-# [Log] 定義日誌輸出函式 (防止重複定義)
+# [Log] 定義日誌輸出函式
 if (-not (Get-Command Write-Log -ErrorAction SilentlyContinue)) {
     function Write-Log {
         param([string]$Message)
@@ -93,9 +93,12 @@ function Send-AutoTaskReport {
     if (Test-Path $LogFile) {
         try {
             $LogContent = Get-Content $LogFile -Tail 5 -Encoding UTF8
-            # [修正] 將陣列轉字串的操作移出雙引號，改用 Environment::NewLine 以避免語法解析錯誤
             $LogText = $LogContent -join [Environment]::NewLine
-            $Msg += "`n`n**📋 Master Log:**`n```text`n$LogText`n```"
+            
+            # [修正重點] 使用單引號來處理 Markdown 的 ``` 符號，避免 PowerShell 轉義錯誤
+            # 這樣寫 PowerShell 絕對不會誤判
+            $Msg += "`n`n**📋 Master Log:**`n" + '```text' + "`n$LogText`n" + '```'
+            
         } catch {}
     }
 

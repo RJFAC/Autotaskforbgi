@@ -1,5 +1,5 @@
 {
-    "Monday":  "monday",
+    "Monday":  "模板-Copy",
     "Tuesday":  "模板-Copy",
     "Wednesday":  "模板-Copy",
     "Thursday":  "模板-Copy",
@@ -7,31 +7,31 @@
     "Saturday":  "模板-Copy",
     "Sunday":  "模板-Copy",
     "Turbulence":  {
-                       "Monday":  "聖遺物狗糧,每日雞腿好感,每日雞腿好感,刷怪物素材,刷怪物素材,刷怪物素材,三次祝聖移湧地脈花,三次祝聖移湧地脈花,三次祝聖移湧地脈花,聖遺物秘境,聖遺物秘境",
-                       "Tuesday":  "每日雞腿好感,每日雞腿好感,每日雞腿好感",
-                       "Wednesday":  "IT_Wednesday",
-                       "Thursday":  "IT_Thursday",
-                       "Friday":  "IT_Friday",
-                       "Saturday":  "IT_Saturday",
-                       "Sunday":  "IT_Sunday",
+                       "Monday":  "模板-Copy",
+                       "Tuesday":  "模板-Copy",
+                       "Wednesday":  "模板-Copy",
+                       "Thursday":  "模板-Copy",
+                       "Friday":  "模板-Copy",
+                       "Saturday":  "模板-Copy",
+                       "Sunday":  "模板-Copy",
                        "NoShutdown":  {
-                                          "Thursday":  false,
-                                          "Tuesday":  false,
-                                          "Saturday":  false,
-                                          "Wednesday":  false,
-                                          "Sunday":  false,
-                                          "Friday":  false,
-                                          "Monday":  false
+                                          "Thursday":  true,
+                                          "Tuesday":  true,
+                                          "Saturday":  true,
+                                          "Wednesday":  true,
+                                          "Sunday":  true,
+                                          "Friday":  true,
+                                          "Monday":  true
                                       }
                    },
     "NoShutdown":  {
-                       "Thursday":  false,
-                       "Tuesday":  false,
-                       "Saturday":  false,
-                       "Wednesday":  false,
-                       "Sunday":  false,
-                       "Friday":  false,
-                       "Monday":  false
+                       "Thursday":  true,
+                       "Tuesday":  true,
+                       "Saturday":  true,
+                       "Wednesday":  true,
+                       "Sunday":  true,
+                       "Friday":  true,
+                       "Monday":  true
                    },
     "GenshinPath":  "C:\\Program Files\\HoYoPlay\\games\\Genshin Impact Game"
 }
