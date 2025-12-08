@@ -1,43 +1,29 @@
 ﻿<#
     .SYNOPSIS
-    Discord Webhook 通知模組 (Final Fix)
-    
+    Discord Webhook 通知模組 (修復版 V2.1)
     .DESCRIPTION
-    已驗證：
-    1. 包含 ToUniversalTime() 修復，解決 Discord 顯示未來時間的問題。
-    2. 包含 Dashboard 測試時自動載入 Config 的功能。
-    3. 包含防閃退與日誌功能。
-    4. [New] 包含 UTF-8 編碼強制設定，解決中文變問號的問題。
+    已修復字串引號巢狀導致的語法錯誤，並包含 Send-AutoTaskReport 函數。
 #>
 
-# [Log] 定義日誌輸出函式 (防止無主程式時報錯)
+# [Log] 定義日誌輸出函式 (防止重複定義)
 if (-not (Get-Command Write-Log -ErrorAction SilentlyContinue)) {
     function Write-Log {
         param([string]$Message)
         $Time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        $LogContent = "[$Time] $Message"
-        Write-Host $LogContent -ForegroundColor Cyan
-        try {
-            Add-Content -Path "Discord_Debug.log" -Value $LogContent -ErrorAction SilentlyContinue
-        } catch {}
+        Write-Host "[$Time] $Message" -ForegroundColor Cyan
     }
 }
 
 function Send-DiscordNotification {
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$Message,
+        [Parameter(Mandatory=$true)][string]$Message,
         [string]$Color = "Blue",
         [string]$Title = "AutoTask Notification"
     )
 
-    # [Fix] 1. 自動載入設定檔 (針對 Dashboard 測試環境)
+    # 1. 自動載入設定檔
     if (-not $Global:Config -or -not $Global:Config.DiscordWebhook) {
-        $ConfigPaths = @(
-            "C:\AutoTask\Configs\EnvConfig.json",
-            "$PSScriptRoot\..\Configs\EnvConfig.json"
-        )
-
+        $ConfigPaths = @("C:\AutoTask\Configs\EnvConfig.json", "$PSScriptRoot\..\Configs\EnvConfig.json")
         foreach ($Path in $ConfigPaths) {
             if (Test-Path $Path) {
                 try {
@@ -49,28 +35,17 @@ function Send-DiscordNotification {
         }
     }
 
-    # [Fix] 2. 檢查 Webhook
+    # 2. 檢查 Webhook
     if (-not $Global:Config.DiscordWebhook) {
-        $ErrorMsg = "錯誤: 找不到 Webhook 設定，無法發送通知。"
-        Write-Log $ErrorMsg
-        Write-Host $ErrorMsg -ForegroundColor Red
-        if ($MyInvocation.InvocationName -ne '.') { Read-Host "請按 Enter 鍵繼續..." }
+        Write-Host "錯誤: 找不到 Webhook 設定 (EnvConfig.json)，無法發送通知。" -ForegroundColor Red
         return
     }
 
     $WebhookUrl = $Global:Config.DiscordWebhook
-
-    # 顏色對照表
-    $ColorMap = @{
-        "Blue"   = 3447003
-        "Green"  = 5763719
-        "Red"    = 15548997
-        "Orange" = 15105570
-    }
-
+    $ColorMap = @{ "Blue"=3447003; "Green"=5763719; "Red"=15548997; "Orange"=15105570 }
     $ColorCode = if ($ColorMap.ContainsKey($Color)) { $ColorMap[$Color] } else { 3447003 }
 
-    # [Fix] 3. 建構 Payload (關鍵修復：轉為 UTC 時間)
+    # 3. 建構 Payload
     $Payload = @{
         username = "AutoTask Bot"
         embeds = @(
@@ -84,19 +59,45 @@ function Send-DiscordNotification {
     }
 
     try {
-        # [Fix] 4. 強制 UTF-8 編碼 (解決中文變問號的問題)
-        # 加入 charset=utf-8 讓 Discord 正確識別中文字元
         $JsonBody = $Payload | ConvertTo-Json -Depth 10
-        $Response = Invoke-RestMethod -Uri $WebhookUrl -Method Post -ContentType 'application/json; charset=utf-8' -Body $JsonBody -ErrorAction Stop
-        
-        Write-Log "[Notify] Success: Notification sent."
+        $null = Invoke-RestMethod -Uri $WebhookUrl -Method Post -ContentType 'application/json; charset=utf-8' -Body $JsonBody -ErrorAction Stop
+        Write-Host "[Notify] 通知已發送: $Title" -ForegroundColor Green
     }
     Catch {
-        $ErrorMsg = $_.Exception.Message
-        Write-Log "[Notify] Error: $ErrorMsg"
-        Write-Host "發送失敗: $ErrorMsg" -ForegroundColor Red
-        
-        # 錯誤時暫停，方便除錯
-        if ($MyInvocation.InvocationName -ne '.') { Read-Host "請按 Enter 鍵繼續..." }
+        Write-Host "[Notify] 發送失敗: $($_.Exception.Message)" -ForegroundColor Red
     }
+}
+
+# [新增] 兼容 Master.ps1 的報告函數
+function Send-AutoTaskReport {
+    param(
+        [string]$Status,
+        [string]$LogFile
+    )
+    
+    $Title = "任務報告: $Status"
+    $Color = "Blue"
+    $Msg = "系統狀態更新。"
+
+    if ($Status -eq "Success") {
+        $Title = "✅ 任務執行成功"
+        $Color = "Green"
+        $Msg = "所有排程任務已完成，系統準備進入休眠/關機流程。"
+    } elseif ($Status -eq "Error") {
+        $Title = "❌ 任務執行失敗"
+        $Color = "Red"
+        $Msg = "偵測到嚴重錯誤，請檢查主機日誌。"
+    }
+
+    # 嘗試讀取日誌最後幾行
+    if (Test-Path $LogFile) {
+        try {
+            $LogContent = Get-Content $LogFile -Tail 5 -Encoding UTF8
+            # [修正] 將陣列轉字串的操作移出雙引號，改用 Environment::NewLine 以避免語法解析錯誤
+            $LogText = $LogContent -join [Environment]::NewLine
+            $Msg += "`n`n**📋 Master Log:**`n```text`n$LogText`n```"
+        } catch {}
+    }
+
+    Send-DiscordNotification -Title $Title -Message $Msg -Color $Color
 }
