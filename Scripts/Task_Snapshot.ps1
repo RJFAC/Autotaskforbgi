@@ -1,125 +1,196 @@
-﻿# =======================================================
-# 檔案名稱: Task_Snapshot.ps1
-# 功能: 製作 AutoTask 完整系統快照 (GUI 整合修復版 v2.1)
-# 更新: 
-#   1. 修復 BetterGI 日誌未被包含的問題
-#   2. 加入大檔案截斷保護
-#   3. [新增] 納入 .md 與 .txt 文件 (備份邏輯分析報告)
-# =======================================================
+﻿<#
+    .SYNOPSIS
+    AutoTask Snapshot Generator V2.2 (24h Filter Edition)
+    .DESCRIPTION
+    蒐集系統關鍵檔案、腳本與日誌，打包成 Zip 供 AI 分析或備份。
+    V2.2 Update:
+    - [Log] 強制過濾: 預設僅擷取「過去 24 小時內」的日誌檔。
+    - [Log] 智能回退: 若 24 小時內無日誌，則擷取最近的 1 份以供參考。
+    - [Log] 維持 V2.1 的智能截斷 (Head 500 + Tail 2000)。
+#>
+
 $ErrorActionPreference = "SilentlyContinue"
-$BaseDir = "C:\AutoTask"
-$TimeStamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$SnapshotDir = "$BaseDir\Snapshot_Temp_$TimeStamp"
-$ZipFile = "$BaseDir\AutoTask_Snapshot_$TimeStamp.zip"
 
-# --- [設定] 日誌參數 ---
-$LogSizeThreshold = 5MB   # 超過 5MB 則截斷
-$LogHeadLines     = 200   # 保留前 200 行
-$LogTailLines     = 5000  # 保留後 5000 行
+# --- [路徑設定] ---
+$WorkDir = "C:\AutoTask"
+$ScriptsDir = "$WorkDir\Scripts"
+$LogsDir = "$WorkDir\Logs"
+$ConfigsDir = "$WorkDir\Configs"
+$RemoteLogsDir = "$WorkDir\1Remote\.logs"
+$BetterGILogsDir = "C:\Program Files\BetterGI\log"
 
-Write-Host ">>> [AutoTask] 正在製作系統診斷快照..." -ForegroundColor Cyan
-New-Item -Path $SnapshotDir -ItemType Directory -Force | Out-Null
+# 產生時間戳記
+$DateStr = Get-Date -Format "yyyyMMdd_HHmmss"
+$SnapshotName = "AutoTask_Snapshot_$DateStr"
+$TempDir = "$WorkDir\Snapshot_Temp_$DateStr"
+$ZipPath = "$WorkDir\$SnapshotName.zip"
 
-# 1. 檔案結構
-Write-Host " -> [1/5] 掃描檔案結構..."
-Get-ChildItem -Path $BaseDir -Recurse | Select-Object FullName | Out-String | Set-Content "$SnapshotDir\0_File_Structure.txt" -Encoding UTF8
+# 建立暫存目錄
+New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
 
-# 2. 腳本檔案 (包含 .ps1, .bat, .md, .txt)
-Write-Host " -> [2/5] 備份腳本與說明文件..."
-$ScriptContent = "=== [ AutoTask Scripts & Docs Snapshot ] ===`r`n"
-# [更新] 增加 *.md 與 *.txt 以包含邏輯分析文件
-$ScriptFiles = Get-ChildItem -Path "$BaseDir\Scripts", "$BaseDir" -Include *.ps1, *.bat, *.md, *.txt -Recurse
+Write-Host ">>> 正在建立快照: $SnapshotName" -ForegroundColor Cyan
 
-foreach ($File in $ScriptFiles) {
-    # 跳過 Snapshot 自身產生的暫存檔與 Hash 檔，避免混淆
-    if ($File.Name -match "Snapshot|File_Structure|ScriptHash") { continue }
-
-    if ($File.Length -lt 5000000) { 
-        $ScriptContent += "`r`n" + ("=" * 70) + "`r`n"
-        $ScriptContent += "FILE: $($File.Name) | PATH: $($File.FullName)`r`n"
-        $ScriptContent += ("=" * 70) + "`r`n"
-        try { 
-            $ScriptContent += (Get-Content $File.FullName -Raw -Encoding UTF8) + "`r`n" 
-        } catch { 
-            $ScriptContent += "[Error Reading File]`r`n" 
-        }
-    }
-}
-Set-Content -Path "$SnapshotDir\1_Full_Scripts.txt" -Value $ScriptContent -Encoding UTF8
-
-# 3. 設定檔
-Write-Host " -> [3/5] 備份設定檔..."
-$ConfigContent = "=== [ AutoTask Configs ] ===`r`n"
-$ConfigFiles = Get-ChildItem -Path "$BaseDir\Configs" -Include *.json, *.xml, *.map -Recurse
-foreach ($File in $ConfigFiles) {
-    $ConfigContent += "`r`n" + ("=" * 70) + "`r`n"
-    $ConfigContent += "FILE: $($File.Name)`r`n"
-    $ConfigContent += (Get-Content $File.FullName -Raw -Encoding UTF8) + "`r`n"
-}
-Set-Content -Path "$SnapshotDir\2_Configs.txt" -Value $ConfigContent -Encoding UTF8
-
-# 4. 近期日誌 (包含 BetterGI)
-Write-Host " -> [4/5] 擷取近期日誌 (含 BetterGI)..."
-$LogContent = "=== [ Recent Logs Summary ] ===`r`n"
-
-# 定義日誌來源路徑
-$LogSearchPaths = @("$BaseDir\Logs", "$BaseDir\1Remote\.logs")
-
-# [修復] 加入 BetterGI 日誌路徑偵測
-$BetterGIDefault = "C:\Program Files\BetterGI\log"
-# 嘗試從設定檔讀取自定義路徑 (如果有的話)
-if (Test-Path "$BaseDir\Configs\EnvConfig.json") {
-    try {
-        $EnvParams = Get-Content "$BaseDir\Configs\EnvConfig.json" -Raw -Encoding UTF8 | ConvertFrom-Json
-        # 如果未來有在 EnvConfig 定義 BetterGIPath，可以在這裡擴充
-    } catch {}
-}
-
-if (Test-Path $BetterGIDefault) { 
-    Write-Host "    - 偵測到 BetterGI 日誌目錄，已加入掃描。" -ForegroundColor Gray
-    $LogSearchPaths += $BetterGIDefault 
-} else {
-    Write-Host "    ⚠️ 未偵測到預設 BetterGI 日誌目錄 ($BetterGIDefault)" -ForegroundColor Yellow
-}
-
-# 增加擷取數量至 25 個，並包含 .log, .md
-$LogFiles = Get-ChildItem -Path $LogSearchPaths -Include *.log, *.md -Recurse -ErrorAction SilentlyContinue | 
-    Sort-Object LastWriteTime -Descending | Select-Object -First 25
-
-foreach ($File in $LogFiles) {
-    $SizeMB = [math]::Round($File.Length/1MB, 2)
-    $LogContent += "`r`n" + ("=" * 70) + "`r`n"
-    $LogContent += "FILE: $($File.Name)`r`nPATH: $($File.FullName)`r`nTIME: $($File.LastWriteTime)`r`nSIZE: $SizeMB MB`r`n"
-    $LogContent += ("=" * 70) + "`r`n"
+# --- [輔助函數] 智能讀取日誌 ---
+function Get-SmartLogContent {
+    param([string]$FilePath)
     
     try {
-        if ($File.Length -gt $LogSizeThreshold) {
-            # 大檔案截斷處理
-            $LogContent += "[⚠️ FILE TOO LARGE ($SizeMB MB) - TRUNCATED MODE]`r`n`r`n"
-            $Head = Get-Content $File.FullName -Head $LogHeadLines -Encoding UTF8
-            $Tail = Get-Content $File.FullName -Tail $LogTailLines -Encoding UTF8
-            
-            $LogContent += ($Head -join "`r`n") + "`r`n"
-            $LogContent += "`r`n... [ Content Truncated / 略過中間內容 ] ...`r`n`r`n"
-            $LogContent += ($Tail -join "`r`n") + "`r`n"
-        } else {
-            # 一般讀取
-            $LogContent += (Get-Content $File.FullName -Raw -Encoding UTF8) + "`r`n"
+        $FileItem = Get-Item $FilePath
+        # 門檻: 2MB
+        if ($FileItem.Length -lt 2MB) {
+            return Get-Content -Path $FilePath -Raw -Encoding UTF8 -ErrorAction Stop
         }
-    } catch {
-        $LogContent += "[讀取檔案時發生錯誤: $_]`r`n"
+        else {
+            # 大檔案策略: Head 500 + Tail 2000
+            $Head = Get-Content -Path $FilePath -Head 500 -Encoding UTF8
+            $Tail = Get-Content -Path $FilePath -Tail 2000 -Encoding UTF8
+            
+            $Separator = "`r`n`r`n... [Log Truncated: Skipped Middle Content] ...`r`n... [Showing First 500 lines & Last 2000 lines] ...`r`n`r`n"
+            
+            return ($Head -join "`r`n") + $Separator + ($Tail -join "`r`n")
+        }
+    }
+    catch {
+        return "[Error Reading File: $_]"
     }
 }
-Set-Content -Path "$SnapshotDir\3_Recent_Logs.txt" -Value $LogContent -Encoding UTF8
 
-# 5. 壓縮
-Write-Host " -> [5/5] 正在壓縮..."
-Compress-Archive -Path "$SnapshotDir\*" -DestinationPath $ZipFile -Force
-Remove-Item -Path $SnapshotDir -Recurse -Force
+# --- [輔助函數] 獲取近期日誌 (24h 邏輯) ---
+function Get-RecentLogs {
+    param([string]$Path, [int]$MaxCount=5)
+    if (-not (Test-Path $Path)) { return @() }
+    
+    $Now = Get-Date
+    $OneDayAgo = $Now.AddHours(-24)
 
-Write-Host ">>> 快照製作完成！" -ForegroundColor Green
-Write-Host "檔案: $ZipFile" -ForegroundColor Yellow
+    # 1. 先嘗試抓取 24 小時內的檔案
+    $Logs = Get-ChildItem -Path $Path -Filter "*.log" -File | 
+            Where-Object { $_.LastWriteTime -ge $OneDayAgo } | 
+            Sort-Object LastWriteTime -Descending
 
-# 自動開啟檔案位置
-Invoke-Item $ZipFile
-Start-Sleep -Seconds 2
+    # 2. 如果 24 小時內沒有檔案 (例如剛過午夜)，則抓取最近的 1 個檔案作為參考
+    if ($Logs.Count -eq 0) {
+        $Logs = Get-ChildItem -Path $Path -Filter "*.log" -File | 
+                Sort-Object LastWriteTime -Descending | 
+                Select-Object -First 1
+    } else {
+        # 如果有檔案，則限制最大數量
+        $Logs = $Logs | Select-Object -First $MaxCount
+    }
+    
+    return $Logs
+}
+
+# 針對 1Remote 的特殊處理 (副檔名 .md)
+function Get-RecentRemoteLogs {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return @() }
+    
+    $OneDayAgo = (Get-Date).AddHours(-24)
+    
+    $Logs = Get-ChildItem -Path $Path -Filter "*.md" -File | 
+            Where-Object { $_.LastWriteTime -ge $OneDayAgo } | 
+            Sort-Object LastWriteTime -Descending
+            
+    if ($Logs.Count -eq 0) {
+        $Logs = Get-ChildItem -Path $Path -Filter "*.md" -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    }
+    return $Logs | Select-Object -First 3
+}
+
+# ==============================================================================
+# 1. 輸出檔案結構
+# ==============================================================================
+Write-Host " -> 掃描檔案結構..."
+$StructureFile = "$TempDir\0_File_Structure.txt"
+$StructureContent = Get-ChildItem -Path $WorkDir -Recurse | Select-Object FullName, Length, LastWriteTime | Out-String -Width 120
+Set-Content -Path $StructureFile -Value $StructureContent -Encoding UTF8
+
+# ==============================================================================
+# 2. 輸出完整腳本內容 (1_Full_Scripts.txt)
+# ==============================================================================
+Write-Host " -> 彙整腳本原始碼 (強制完整讀取文件)..."
+$ScriptsOutFile = "$TempDir\1_Full_Scripts.txt"
+Add-Content -Path $ScriptsOutFile -Value "=== [ AutoTask Scripts & Docs Snapshot ] ===`r`n" -Encoding UTF8
+
+$ScriptFiles = Get-ChildItem -Path $ScriptsDir, $WorkDir -Include *.ps1, *.bat, *.md, *.xml -File -Recurse | 
+               Where-Object { $_.FullName -notmatch "Snapshot_Temp" -and $_.FullName -notmatch ".zip" }
+
+foreach ($File in $ScriptFiles) {
+    $Header = "`r`n======================================================================`r`n" +
+              "FILE: $($File.Name) | PATH: $($File.FullName)`r`n" +
+              "======================================================================`r`n"
+    Add-Content -Path $ScriptsOutFile -Value $Header -Encoding UTF8
+
+    if ($File.Name -eq "AutoTask_Core_Analysis.md" -or $File.Length -lt 2MB) {
+        try {
+            $Content = Get-Content -Path $File.FullName -Raw -Encoding UTF8 -ErrorAction Stop
+            Add-Content -Path $ScriptsOutFile -Value $Content -Encoding UTF8
+        } catch {
+            Add-Content -Path $ScriptsOutFile -Value "[Error Reading File: $_]" -Encoding UTF8
+        }
+    } else {
+        Add-Content -Path $ScriptsOutFile -Value "[File too large (>2MB), truncated.]" -Encoding UTF8
+    }
+}
+
+# ==============================================================================
+# 3. 輸出設定檔 (2_Configs.txt)
+# ==============================================================================
+Write-Host " -> 彙整設定檔..."
+$ConfigsOutFile = "$TempDir\2_Configs.txt"
+Add-Content -Path $ConfigsOutFile -Value "=== [ AutoTask Configs ] ===`r`n" -Encoding UTF8
+
+$ConfigFiles = Get-ChildItem -Path $ConfigsDir -File
+foreach ($File in $ConfigFiles) {
+    $Header = "`r`n======================================================================`r`n" +
+              "FILE: $($File.Name)`r`n" 
+    Add-Content -Path $ConfigsOutFile -Value $Header -Encoding UTF8
+    
+    try {
+        $Content = Get-Content -Path $File.FullName -Raw -Encoding UTF8
+        Add-Content -Path $ConfigsOutFile -Value $Content -Encoding UTF8
+    } catch {
+        Add-Content -Path $ConfigsOutFile -Value "[Error reading config]"
+    }
+}
+
+# ==============================================================================
+# 4. 輸出近期日誌 (3_Recent_Logs.txt) - 智能截斷 + 24H 過濾
+# ==============================================================================
+Write-Host " -> 彙整近期日誌 (24h 限制 + 智能 Head/Tail)..."
+$LogsOutFile = "$TempDir\3_Recent_Logs.txt"
+Add-Content -Path $LogsOutFile -Value "=== [ Recent Logs Summary (Last 24h) ] ===`r`n" -Encoding UTF8
+
+# 收集目標 (使用新的過濾函數)
+$LogTargets = @()
+$LogTargets += Get-RecentLogs -Path $LogsDir
+$LogTargets += Get-RecentRemoteLogs -Path $RemoteLogsDir
+$LogTargets += Get-RecentLogs -Path $BetterGILogsDir
+
+foreach ($File in $LogTargets) {
+    if ($null -eq $File) { continue }
+    
+    $Header = "`r`n======================================================================`r`n" +
+              "FILE: $($File.Name)`r`n" +
+              "PATH: $($File.FullName)`r`n" +
+              "TIME: $($File.LastWriteTime)`r`n" +
+              "SIZE: $([math]::Round($File.Length / 1MB, 2)) MB`r`n" +
+              "======================================================================`r`n"
+    Add-Content -Path $LogsOutFile -Value $Header -Encoding UTF8
+
+    $Content = Get-SmartLogContent -FilePath $File.FullName
+    $Content | Out-File -FilePath $LogsOutFile -Append -Encoding UTF8
+}
+
+# ==============================================================================
+# 5. 壓縮與清理
+# ==============================================================================
+Write-Host " -> 正在壓縮..."
+Compress-Archive -Path "$TempDir\*" -DestinationPath $ZipPath -Force
+Remove-Item -Path $TempDir -Recurse -Force
+
+Write-Host ">>> 快照建立完成: $ZipPath" -ForegroundColor Green
+Write-Host "提示: 您現在可以在 Dashboard 上傳此 Zip 檔案供 AI 分析。" -ForegroundColor Yellow
+
+Invoke-Item $WorkDir
