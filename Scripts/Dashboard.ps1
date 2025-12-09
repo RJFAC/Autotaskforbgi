@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Dashboard V9.0 - Full GUI Integration (Discord + Snapshot)
+# AutoTask Dashboard V9.3 - Logic Fix (Day 1 Double Schedule Display)
 # =============================================================================
 
 # --- [隱藏 Console 黑窗] ---
@@ -47,7 +47,7 @@ $Global:ResinData = @{}
 $Global:InitialHash = ""
 $Script:IsDirty = $false
 $Script:IsLoading = $false
-$WindowTitle = "AutoTask 控制台 V9.0"
+$WindowTitle = "AutoTask 控制台 V9.3"
 
 # 字型
 $MainFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10)
@@ -133,6 +133,7 @@ function Load-ResinConfig {
 }
 
 function Test-GenshinUpdateDay ($CheckDate) {
+    # 判斷是否為版本更新當日 (00:00 基準)
     $RefDate = [datetime]"2024-08-28"
     $DiffDays = ($CheckDate.Date - $RefDate).Days
     if ($DiffDays -ge 0 -and ($DiffDays % 42) -eq 0) { return $true }
@@ -140,11 +141,19 @@ function Test-GenshinUpdateDay ($CheckDate) {
 }
 
 function Test-TurbulencePeriod ($CheckDate) {
-    $RefDate = [datetime]"2024-08-28"
-    $DiffDays = ($CheckDate.Date - $RefDate).Days
-    if ($DiffDays -ge 0) {
-        $CycleDay = $DiffDays % 42
-        if ($CycleDay -ge 8 -and $CycleDay -le 17) { return $CycleDay }
+    # 修正邏輯 V9.2: 精確到小時的紊亂期判斷
+    $RefDate = [datetime]"2024-08-28T00:00:00"
+    $Diff = $CheckDate - $RefDate
+    
+    # 計算週期內的 Offset
+    $CurrentOffset = $Diff.TotalDays % 42
+    if ($CurrentOffset -lt 0) { $CurrentOffset += 42 }
+
+    $StartOffset = 7.41666667 # Day 7 + 10/24
+    $EndOffset   = 17.16666667 # Day 17 + 4/24
+
+    if ($CurrentOffset -ge $StartOffset -and $CurrentOffset -lt $EndOffset) {
+        return [math]::Floor($CurrentOffset)
     }
     return 0
 }
@@ -156,7 +165,21 @@ function Get-DisplayConfigName ($dateObj) {
         $map = Get-Content $DateMap
         foreach ($line in $map) { if ($line -match "^$dStr=(.+)$") { return "$($matches[1]) (指定)" } }
     }
-    if (Test-TurbulencePeriod $dateObj) {
+    
+    # [V9.3 更新] 新增 Day 1 (Wednesday) 雙重排程顯示邏輯
+    $RefDate = [datetime]"2024-08-28T00:00:00"
+    $SimOffset = ($dateObj.AddHours(4) - $RefDate).TotalDays % 42
+    if ($SimOffset -lt 0) { $SimOffset += 42 }
+    
+    # 若為 Day 7 (Offset 7.0 ~ 8.0)
+    if ($SimOffset -ge 7.0 -and $SimOffset -lt 8.0) {
+        $def = $Global:WeeklyRules.$dWeek
+        $turb = $Global:TurbulenceRules.$dWeek
+        return "$def + $turb (雙重)"
+    }
+
+    # 這裡也要用 +4 小時去判斷顯示，因為 Dashboard 通常是預覽「執行時」的狀況
+    if (Test-TurbulencePeriod $dateObj.AddHours(4)) {
         $tConf = $Global:TurbulenceRules.$dWeek
         if ($tConf) { return "$tConf (紊亂期)" }
     }
@@ -184,7 +207,7 @@ function Get-ShutdownPolicy ($dateObj) {
     $dStr = $dateObj.ToString("yyyyMMdd")
     $dWeek = $dateObj.DayOfWeek.ToString()
     if (Test-Path $NoShutdownLog) { if ((Get-Content $NoShutdownLog) -contains $dStr) { return "不關機 (指定)" } }
-    if (Test-TurbulencePeriod $dateObj) {
+    if (Test-TurbulencePeriod $dateObj.AddHours(4)) {
         if ($Global:TurbulenceNoShut.$dWeek) { return "不關機 (紊亂)" }
     }
     if ($Global:WeeklyNoShut.$dWeek) { return "不關機 (每週)" }
@@ -252,7 +275,7 @@ function Update-StatusUI {
     $st = Get-StatusText
     $finalConf = Get-DisplayConfigName $today
     if (Test-Path $PauseLog) { if ((Get-Content $PauseLog) -contains $today.ToString("yyyyMMdd")) { $finalConf = "PAUSED" } }
-    $Note = ""; if (Test-GenshinUpdateDay $today) { $Note = " (⚠️ 版本更新日)" }; $ITDay = Test-TurbulencePeriod $today; if ($ITDay -gt 0) { $Note = " (🔥 紊亂期 Day $ITDay)" }
+    $Note = ""; if (Test-GenshinUpdateDay $today) { $Note = " (⚠️ 版本更新日)" }; $ITDay = Test-TurbulencePeriod (Get-Date); if ($ITDay -gt 0) { $Note = " (🔥 紊亂期 Day $ITDay)" }
     $lblInfo.Text = "今日: $($today.ToString('yyyy/MM/dd')) ($($today.DayOfWeek))$Note`n配置: $finalConf`n狀態: $($st.Text)"; $lblInfo.ForeColor = $st.Color
 }
 
@@ -264,7 +287,38 @@ $grid.Add_CellClick({ param($s,$e); if($e.RowIndex-lt 0){return}; if($e.ColumnIn
 $grid.Add_CellDoubleClick({ param($s,$e); if($e.RowIndex-lt 0-or $e.ColumnIndex-ne 3){return}; $c=$grid.Rows[$e.RowIndex].Cells[3]; $cv=$c.Value; if($cv-eq $grid.Rows[$e.RowIndex].Cells[2].Value-or $cv-eq "PAUSE"){$cv=""}; $n=Show-ConfigSelectorGUI $cv; if($n-ne $null){ if($n-eq""){ $c.Value=$grid.Rows[$e.RowIndex].Cells[2].Value; $c.Style.BackColor="White"; $c.Style.ForeColor="Black"; $c.Style.Font=$MonoFont }else{ $c.Value=$n; $c.Style.ForeColor="Blue"; $c.Style.Font=$BoldFont; $c.Style.BackColor="White" }; Mark-Dirty } })
 $grid.Add_KeyDown({ param($s,$e); if($e.KeyCode-eq "Delete"){ foreach($c in $grid.SelectedCells){ if($c.ColumnIndex-eq 3){ $def=$grid.Rows[$c.RowIndex].Cells[2].Value; $c.Value=$def; $c.Style.BackColor = "White"; $c.Style.ForeColor = "Black"; $c.Style.Font = $MonoFont; Mark-Dirty } } }; if($e.Control-and $e.KeyCode-eq "V"){ $t=[Windows.Forms.Clipboard]::GetText().Trim(); if($t){ foreach($c in $grid.SelectedCells){ if($c.ColumnIndex-eq 3){ $c.Value=$t; if($t-eq"PAUSE"){ $c.Style.BackColor="LightCoral";$c.Style.ForeColor="White" }else{ $c.Style.ForeColor="Blue";$c.Style.Font=$BoldFont;$c.Style.BackColor="White" }; Mark-Dirty } } } } })
 
-function Load-GridData { $Script:IsLoading=$true; $grid.Rows.Clear(); $MapData=@{}; if(Test-Path $DateMap){Get-Content $DateMap|ForEach{if($_-match"^(\d{8})=(.+)$"){$MapData[$matches[1]]=$matches[2]}}}; $PauseData=@(); if(Test-Path $PauseLog){$PauseData=Get-Content $PauseLog}; $NoShutData=@(); if(Test-Path $NoShutdownLog){$NoShutData=Get-Content $NoShutdownLog}; $Start=(Get-Date).AddHours(-4).Date; for($i=0;$i-lt 90;$i++){ $d=$Start.AddDays($i); $dS=$d.ToString("yyyyMMdd"); $wS=$d.DayOfWeek.ToString(); $def=$Global:WeeklyRules[$wS]; $ITDay=Test-TurbulencePeriod $d; if($ITDay-gt 0){$tConf=$Global:TurbulenceRules[$wS];if($tConf){$def="$tConf"}}; $cur=$def; $isO=$false; $isP=$false; if($PauseData-contains $dS){$cur="PAUSE";$isP=$true}elseif($MapData.ContainsKey($dS)){$cur=$MapData[$dS];$isO=$true}; $isS=$NoShutData-contains $dS; if(Test-TurbulencePeriod $d){if($Global:TurbulenceNoShut[$wS]){$isS=$true}}else{if($Global:WeeklyNoShut[$wS]){$isS=$true}}; $note=""; if(Test-GenshinUpdateDay $d){$note="⚠️ 版本更新"}; if($ITDay-gt 0){$note+=" 🔥 紊亂(Day$ITDay)"}; $idx=$grid.Rows.Add($d.ToString("yyyy/MM/dd"),$wS,$def,$cur,$isS,$note); $row=$grid.Rows[$idx]; $row.Tag=$dS; if($isP){$row.Cells[3].Style.BackColor="LightCoral";$row.Cells[3].Style.ForeColor="White"}elseif($isO){$row.Cells[3].Style.ForeColor="Blue";$row.Cells[3].Style.Font=$BoldFont}; if($note){$row.Cells[5].Style.ForeColor="Magenta";$row.Cells[5].Style.Font=$BoldFont} }; $Script:IsLoading=$false; Mark-Clean }
+function Load-GridData { 
+    $Script:IsLoading=$true; $grid.Rows.Clear(); 
+    $MapData=@{}; if(Test-Path $DateMap){Get-Content $DateMap|ForEach{if($_-match"^(\d{8})=(.+)$"){$MapData[$matches[1]]=$matches[2]}}}
+    $PauseData=@(); if(Test-Path $PauseLog){$PauseData=Get-Content $PauseLog}
+    $NoShutData=@(); if(Test-Path $NoShutdownLog){$NoShutData=Get-Content $NoShutdownLog}
+    
+    $Start=(Get-Date).AddHours(-4).Date; 
+    for($i=0;$i-lt 90;$i++){ 
+        $d=$Start.AddDays($i); $dS=$d.ToString("yyyyMMdd"); $wS=$d.DayOfWeek.ToString(); 
+        $def=$Global:WeeklyRules[$wS]; 
+        
+        # [邏輯修正] 使用 $d.AddHours(4) 模擬執行時間 (04:00) 的狀態
+        # 這樣週六 (Day 17) 04:00 時會因為已過 03:59 而返回 False，正確回歸預設
+        $SimulatedExecTime = $d.AddHours(4)
+        $ITDay=Test-TurbulencePeriod $SimulatedExecTime; 
+        
+        if($ITDay-gt 0){$tConf=$Global:TurbulenceRules[$wS];if($tConf){$def="$tConf"}}; 
+        $cur=$def; $isO=$false; $isP=$false; 
+        if($PauseData-contains $dS){$cur="PAUSE";$isP=$true}elseif($MapData.ContainsKey($dS)){$cur=$MapData[$dS];$isO=$true}; 
+        $isS=$NoShutData-contains $dS; 
+        
+        if(Test-TurbulencePeriod $SimulatedExecTime){if($Global:TurbulenceNoShut[$wS]){$isS=$true}}else{if($Global:WeeklyNoShut[$wS]){$isS=$true}}; 
+        $note=""; if(Test-GenshinUpdateDay $d){$note="⚠️ 版本更新"}; 
+        if($ITDay-gt 0){$note+=" 🔥 紊亂(Day$ITDay)"}; 
+        
+        $idx=$grid.Rows.Add($d.ToString("yyyy/MM/dd"),$wS,$def,$cur,$isS,$note); 
+        $row=$grid.Rows[$idx]; $row.Tag=$dS; 
+        if($isP){$row.Cells[3].Style.BackColor="LightCoral";$row.Cells[3].Style.ForeColor="White"}elseif($isO){$row.Cells[3].Style.ForeColor="Blue";$row.Cells[3].Style.Font=$BoldFont}; 
+        if($note){$row.Cells[5].Style.ForeColor="Magenta";$row.Cells[5].Style.Font=$BoldFont} 
+    }; 
+    $Script:IsLoading=$false; Mark-Clean 
+}
 function Save-GridData { $newMap=@(); $newP=@(); $newS=@(); foreach($r in $grid.Rows){ $k=$r.Tag; $def=$r.Cells[2].Value; $cur=$r.Cells[3].Value; $shut=$r.Cells[4].Value; if($cur-eq"PAUSE"){$newP+=$k}elseif($cur-ne$def){$newMap+="$k=$cur"}; $dObj=[DateTime]::ParseExact($k,"yyyyMMdd",$null); $wS=$dObj.DayOfWeek.ToString(); $defShut=$false; if(Test-TurbulencePeriod $dObj){if($Global:TurbulenceNoShut[$wS]){$defShut=$true}}else{if($Global:WeeklyNoShut[$wS]){$defShut=$true}}; if($shut-and-not$defShut){$newS+=$k} }; if ($newMap.Count -gt 0) { $newMap | Sort-Object | Set-Content $DateMap -Encoding UTF8 } else { New-Item $DateMap -ItemType File -Force | Out-Null }; if ($newP.Count -gt 0)   { $newP   | Sort-Object | Set-Content $PauseLog -Encoding UTF8 } else { New-Item $PauseLog -ItemType File -Force | Out-Null }; if ($newS.Count -gt 0)   { $newS   | Sort-Object | Set-Content $NoShutdownLog -Encoding UTF8 } else { New-Item $NoShutdownLog -ItemType File -Force | Out-Null }; Mark-Clean; [System.Windows.Forms.MessageBox]::Show("設定已儲存！"); Load-GridData; Init-WeeklyTab }
 $TabGrid.Controls.Add($grid); $TabGrid.Controls.Add($pTool)
 
@@ -276,7 +330,7 @@ $DaysTxt = @("週一","週二","週三","週四","週五","週六","週日")
 $WInputs = @{}; $TInputs = @{}; $WShutChecks = @{}; $TShutChecks = @{}
 function Build-WRow ($parent, $y, $txt, $key, $store, $storeCheck) { $l=New-Object System.Windows.Forms.Label; $l.Text=$txt; $l.Location="30,$y"; $l.AutoSize=$true; $l.Font=$MainFont; $t=New-Object System.Windows.Forms.TextBox; $t.Location="80,$y"; $t.Width=220; $t.ReadOnly=$false; $t.Font=$MainFont; $t.Add_TextChanged({Mark-Dirty}); $t.Add_DoubleClick({param($s,$e);$n=Show-ConfigSelectorGUI $s.Text;if($n-ne$null){$s.Text=$n;Mark-Dirty}}); $b=New-Object System.Windows.Forms.Button; $b.Text="選擇"; $b.Location="310,$($y-2)"; $b.Width=60; $b.Font=$MainFont; $b.Tag=$t; $b.Add_Click({param($s,$e);$n=Show-ConfigSelectorGUI $this.Tag.Text;if($n-ne$null){$this.Tag.Text=$n;Mark-Dirty}}.GetNewClosure()); $parent.Controls.AddRange(@($l,$t,$b)); $store[$key]=$t; if($storeCheck-ne$null){$chk=New-Object System.Windows.Forms.CheckBox; $chk.Text="不關機"; $chk.Location="380,$y"; $chk.AutoSize=$true; $chk.Font=$MainFont; $parent.Controls.Add($chk); $storeCheck[$key]=$chk; $chk.Add_CheckedChanged({Mark-Dirty})} }
 $lblW1 = New-Object System.Windows.Forms.Label; $lblW1.Text="=== 一般每週排程 ==="; $lblW1.Location="20,20"; $lblW1.AutoSize=$true; $lblW1.Font=$BoldFont; $lblW1.ForeColor="DarkBlue"; $pnlW.Controls.Add($lblW1); $y=50; for($i=0;$i-lt 7;$i++){ Build-WRow $pnlW $y $DaysTxt[$i] $DaysKey[$i] $WInputs $WShutChecks; $y+=40 }
-$y+=10; $lblW2 = New-Object System.Windows.Forms.Label; $lblW2.Text="=== 紊亂爆發期 (幽境危戰) 專用 ==="; $lblW2.Location="20,$y"; $lblW2.AutoSize=$true; $lblW2.Font=$BoldFont; $lblW2.ForeColor="DarkRed"; $lblW3 = New-Object System.Windows.Forms.Label; $lblW3.Text="(版本更新後第8~17天，優先級高於一般排程)"; $lblW3.Location="20,$($y+25)"; $lblW3.AutoSize=$true; $lblW3.Font=$MainFont; $lblW3.ForeColor="Gray"; $pnlW.Controls.AddRange(@($lblW2, $lblW3)); $y+=60; for($i=0;$i-lt 7;$i++){ Build-WRow $pnlW $y $DaysTxt[$i] $DaysKey[$i] $TInputs $TShutChecks; $y+=40 }
+$y+=10; $lblW2 = New-Object System.Windows.Forms.Label; $lblW2.Text="=== 紊亂爆發期 (幽境危戰) 專用 ==="; $lblW2.Location="20,$y"; $lblW2.AutoSize=$true; $lblW2.Font=$BoldFont; $lblW2.ForeColor="DarkRed"; $lblW3 = New-Object System.Windows.Forms.Label; $lblW3.Text="(版本更新後第8天 10:00 ~ 第18天 03:59)"; $lblW3.Location="20,$($y+25)"; $lblW3.AutoSize=$true; $lblW3.Font=$MainFont; $lblW3.ForeColor="Gray"; $pnlW.Controls.AddRange(@($lblW2, $lblW3)); $y+=60; for($i=0;$i-lt 7;$i++){ Build-WRow $pnlW $y $DaysTxt[$i] $DaysKey[$i] $TInputs $TShutChecks; $y+=40 }
 $y+=30; $btnWSave = New-Object System.Windows.Forms.Button; $btnWSave.Text="儲存所有設定"; $btnWSave.Location="120,$y"; $btnWSave.Size="250,50"; $btnWSave.BackColor="LightGreen"; $btnWSave.Font=$BoldFont; $btnWSave.Add_Click({ $conf=Get-JsonConf $WeeklyConf; if(-not $conf.Turbulence){$conf|Add-Member -Name "Turbulence" -Value @{} -MemberType NoteProperty}; if(-not $conf.NoShutdown){$conf|Add-Member -Name "NoShutdown" -Value @{} -MemberType NoteProperty}; if(-not $conf.Turbulence.NoShutdown){$conf.Turbulence|Add-Member -Name "NoShutdown" -Value @{} -MemberType NoteProperty}; foreach($d in $DaysKey){$conf.$d=$WInputs[$d].Text; $conf.Turbulence.$d=$TInputs[$d].Text; $conf.NoShutdown.$d=$WShutChecks[$d].Checked; $conf.Turbulence.NoShutdown.$d=$TShutChecks[$d].Checked}; if($conf.GenshinPath-eq$null){$conf|Add-Member -Name "GenshinPath" -Value $Global:GenshinPath -MemberType NoteProperty -Force}else{$conf.GenshinPath=$Global:GenshinPath}; $conf|ConvertTo-Json -Depth 4|Set-Content $WeeklyConf; Load-WeeklyRules; Mark-Clean; [System.Windows.Forms.MessageBox]::Show("設定已儲存！"); Load-GridData }); $pnlW.Controls.Add($btnWSave); $TabWeekly.Controls.Add($pnlW)
 function Init-WeeklyTab { $Script:IsLoading = $true; $wk=Get-JsonConf $WeeklyConf; if($wk){ foreach($d in $DaysKey){ if($WInputs.ContainsKey($d)){$WInputs[$d].Text=$wk.$d}; if($wk.Turbulence-and $TInputs.ContainsKey($d)){$TInputs[$d].Text=$wk.Turbulence.$d}; if($wk.NoShutdown-and $WShutChecks.ContainsKey($d)){$WShutChecks[$d].Checked=[bool]$wk.NoShutdown.$d}; if($wk.Turbulence.NoShutdown-and $TShutChecks.ContainsKey($d)){$TShutChecks[$d].Checked=[bool]$wk.Turbulence.NoShutdown.$d} } }; $Script:IsLoading = $false }
 

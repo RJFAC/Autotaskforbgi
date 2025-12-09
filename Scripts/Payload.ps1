@@ -1,8 +1,9 @@
 # ==============================================================================
-# AutoTask Payload Script V5.29 (ForceEnd with 'forceend' Task)
+# AutoTask Payload Script V5.31 (Day 1 Double Schedule)
 # ------------------------------------------------------------------------------
-# 職責: 在 RDP 遠端桌面會話中運行，負責調度 BetterGI 執行遊戲自動化。
-# V5.29: 優化跨日保護，03:50 觸發時執行 "forceend" 任務進行優雅收尾。
+# V5.31: 新增紊亂期 Day 1 (週三) 的雙重排程邏輯：
+#        04:00 執行一般配置 -> 等待至 10:00 -> 執行紊亂配置。
+# V5.30: 新增 [跨日等待機制] (Smart Wait)。
 # ==============================================================================
 
 # 1. 初始化與環境設定
@@ -12,6 +13,7 @@ $DateStr = Get-Date -Format "yyyyMMdd"
 $LogFile = "$LogDir\Payload_$DateStr.log"
 $FlagDir = "$WorkDir\Flags"
 $DoneFlag = "$FlagDir\Done.flag"
+$WeeklyConfFile = "$WorkDir\Configs\WeeklyConfig.json"
 
 # 確保日誌目錄存在
 if (!(Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
@@ -35,10 +37,25 @@ trap {
     exit 1
 }
 
-# 2. 檢查是否需要執行
-Write-Log ">>> Payload 啟動 (V5.29 - ForceEnd Task)..."
+# 2. 啟動與跨日檢查 (Smart Wait)
+Write-Log ">>> Payload 啟動 (V5.31 - Day 1 Logic)..."
 
-# 讀取 EnvConfig
+$Now = Get-Date
+if ($Now.Hour -eq 3 -and $Now.Minute -ge 50) {
+    Write-Log "⚠️ 偵測到於重置緩衝期 (03:50~04:00) 啟動，進入等待模式..." "WARNING"
+    while ($true) {
+        $Check = Get-Date
+        if ($Check.Hour -ge 4) {
+            Write-Log ">>> 時間已達 04:00+，解除鎖定！" "GREEN"
+            Start-Sleep 5
+            break
+        }
+        Start-Sleep 10
+    }
+    $Now = Get-Date
+}
+
+# 讀取 Configs
 $EnvConfigFile = "$WorkDir\Configs\EnvConfig.json"
 if (Test-Path $EnvConfigFile) {
     $EnvConfig = Get-Content -Path $EnvConfigFile -Raw | ConvertFrom-Json
@@ -48,161 +65,106 @@ if (Test-Path $EnvConfigFile) {
     $GenshinPath = "C:\Program Files\HoYoPlay\games\Genshin Impact Game"
 }
 
-# 讀取 DateConfig.map
+# 讀取 DateConfig.map 決定主要任務 (Task 1)
 $MapFile = "$WorkDir\Configs\DateConfig.map"
 $TaskName = "Default"
-
-# 計算今日 (原神 04:00 換日邏輯)
-# 若現在是 00:00 - 03:59，則視為「前一天」
-$Now = Get-Date
-if ($Now.Hour -lt 4) {
-    $TodayKey = $Now.AddDays(-1).ToString("yyyyMMdd")
-} else {
-    $TodayKey = $Now.ToString("yyyyMMdd")
-}
-
-Write-Log "計算日期 Key: $TodayKey (當前時間: $($Now.ToString('HH:mm')))"
+if ($Now.Hour -lt 4) { $TodayKey = $Now.AddDays(-1).ToString("yyyyMMdd") } else { $TodayKey = $Now.ToString("yyyyMMdd") }
+Write-Log "計算日期 Key: $TodayKey"
 
 if (Test-Path $MapFile) {
     $MapContent = Get-Content $MapFile
     foreach ($Line in $MapContent) {
         if ($Line -match "^$TodayKey=(.*)") {
-            $TaskName = $Matches[1]
-            break
+            $TaskName = $Matches[1]; break
         }
     }
 }
+Write-Log "Task 1 (Primary): [$TaskName]"
 
-Write-Log "今日任務目標: [$TaskName]"
-
-# 3. 啟動 BetterGI
+# 3. 準備 BetterGI 執行環境
 $BetterGIPath = "C:\AutoTask\BetterGI\BetterGI.exe" 
 $BetterGILogPath = "$WorkDir\Logs\BetterGI\BetterGI.log"
-
-# 殺死殘留進程
 Stop-Process -Name "BetterGI", "YuanShen", "GenshinImpact" -Force -ErrorAction SilentlyContinue
 
-# 啟動參數
-$Args = "-start -task `"$TaskName`""
-Write-Log "啟動 BetterGI: $Args"
+# --- [V5.31 核心: 雙重排程邏輯] ---
+# 判斷是否為紊亂期 Day 1 (Cycle Offset 7.0 ~ 8.0)
+$RefDate = [datetime]"2024-08-28T00:00:00"
+$CycleOffset = ($Now - $RefDate).TotalDays % 42
+if ($CycleOffset -lt 0) { $CycleOffset += 42 }
 
-try {
-    Start-Process -FilePath $BetterGIPath -ArgumentList $Args -WorkingDirectory (Split-Path $BetterGIPath)
-} catch {
-    Write-Log "無法啟動 BetterGI: $($_.Exception.Message)" "ERROR"
-    exit 1
-}
+$IsTurbulenceDay1 = ($CycleOffset -ge 7.0 -and $CycleOffset -lt 8.0)
+if ($IsTurbulenceDay1) { Write-Log "📅 偵測到紊亂期首日 (Day 1 - Wednesday)，啟用雙重排程機制。" "MAGENTA" }
 
-# 4. 監控迴圈 (Monitor Loop)
-$TimeoutMinutes = 180 # 3小時超時
+# ----------------------------
+# 執行 Task 1 (Primary)
+# ----------------------------
+Write-Log "啟動 BetterGI (Task 1): $TaskName"
+$Args1 = "-start -task `"$TaskName`""
+$Process1 = Start-Process -FilePath $BetterGIPath -ArgumentList $Args1 -WorkingDirectory (Split-Path $BetterGIPath) -PassThru
+
+# 監控 Loop (Task 1)
+$TimeoutMinutes = 180
 $StartTime = Get-Date
-
-Write-Log "進入監控模式..."
-
 while ($true) {
-    $CurrentTime = Get-Date
+    if ($Process1.HasExited) { Write-Log "Task 1 執行程序已結束。"; break }
+    if ((Get-Date) - $StartTime).TotalMinutes -gt $TimeoutMinutes {
+        Stop-Process -Id $Process1.Id -Force -ErrorAction SilentlyContinue; break
+    }
+    Start-Sleep 10
+}
+Stop-Process -Name "YuanShen", "GenshinImpact" -Force -ErrorAction SilentlyContinue # Task 1 結束後清理遊戲
+
+# ----------------------------
+# 執行 Task 2 (Secondary - if Day 1)
+# ----------------------------
+if ($IsTurbulenceDay1) {
+    Write-Log "準備執行 Task 2 (紊亂配置)..." 
     
-    # --------------------------------------------------------------------------
-    # [CRITICAL UPDATE] 03:50 跨日收尾流程 (ForceEnd Protocol)
-    # --------------------------------------------------------------------------
-    # 只要時間進入 03:50 ~ 03:59 區間，啟動 "forceend" 任務進行收尾。
-    if ($CurrentTime.Hour -eq 3 -and $CurrentTime.Minute -ge 50) {
-        Write-Log "⚠️ [ForceEnd] 時間已達 03:50 ($($CurrentTime.ToString('HH:mm:ss')))，啟動 'forceend' 收尾流程..." "WARNING"
-
-        # 4.1 停止當前正在運行的主要任務 (釋放資源)
-        Write-Log "中止當前任務，準備切換..."
-        Stop-Process -Name "BetterGI" -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 3
-
-        # 4.2 啟動 ForceEnd 任務
-        $ForceEndTask = "forceend"
-        $ForceEndArgs = "-start -task `"$ForceEndTask`""
-        Write-Log "啟動 BetterGI 收尾任務: $ForceEndTask (預計耗時 5 分鐘)"
+    # A. 等待至 10:00
+    $TargetTime = $Now.Date.AddHours(10) # 當天 10:00
+    while ((Get-Date) -lt $TargetTime) {
+        $Diff = $TargetTime - (Get-Date)
+        Write-Host "⏳ 等待活動開放 (10:00)... 剩餘 $($Diff.Minutes) 分鐘" -NoNewline -ForegroundColor Yellow
+        Start-Sleep 30
         
+        # 防止等到天荒地老 (例如手動觸發時已經超過下午，這裡會直接跳過)
+        if ((Get-Date).Hour -ge 14) { break } 
+    }
+    Write-Log "`n時間已達 10:00，準備啟動 Task 2。" "GREEN"
+
+    # B. 讀取 Config 獲取紊亂任務名
+    $Task2Name = $null
+    if (Test-Path $WeeklyConfFile) {
         try {
-            Start-Process -FilePath $BetterGIPath -ArgumentList $ForceEndArgs -WorkingDirectory (Split-Path $BetterGIPath)
-        } catch {
-            Write-Log "無法啟動 ForceEnd: $($_.Exception.Message)" "ERROR"
-            # 若無法啟動，直接跳去登出
-        }
+            $WkJson = Get-Content $WeeklyConfFile -Raw | ConvertFrom-Json
+            if ($WkJson.Turbulence -and $WkJson.Turbulence.Wednesday) {
+                $Task2Name = $WkJson.Turbulence.Wednesday
+            }
+        } catch { Write-Log "讀取 WeeklyConfig 失敗: $_" "ERROR" }
+    }
 
-        # 4.3 進入 ForceEnd 專用監控迴圈 (直到 03:59:30 或任務結束)
-        # 設定硬性死線：03:59:30 (保留30秒登出緩衝)
-        $ForceEndHardLimit = Get-Date -Hour 3 -Minute 59 -Second 30
+    if ($Task2Name) {
+        Write-Log "啟動 BetterGI (Task 2): $Task2Name"
+        $Args2 = "-start -task `"$Task2Name`""
+        $Process2 = Start-Process -FilePath $BetterGIPath -ArgumentList $Args2 -WorkingDirectory (Split-Path $BetterGIPath) -PassThru
         
-        Write-Log "等待收尾任務完成 (硬性截止時間: 03:59:30)..."
-        
+        # 監控 Loop (Task 2)
+        $StartTime2 = Get-Date
         while ($true) {
-            $SubTime = Get-Date
-            
-            # (A) 硬性死線檢查
-            if ($SubTime -ge $ForceEndHardLimit) {
-                Write-Log "⚠️ [ForceEnd] 已達硬性截止時間 (03:59:30)，強制中斷收尾！" "WARNING"
-                break
+            if ($Process2.HasExited) { Write-Log "Task 2 執行程序已結束。"; break }
+            if ((Get-Date) - $StartTime2).TotalMinutes -gt $TimeoutMinutes {
+                Stop-Process -Id $Process2.Id -Force -ErrorAction SilentlyContinue; break
             }
-
-            # (B) 檢查 BetterGI 是否自行結束 (視為任務完成)
-            $BGI = Get-Process -Name "BetterGI" -ErrorAction SilentlyContinue
-            if (!$BGI) {
-                Write-Log "[ForceEnd] BetterGI 進程已結束，視為收尾完成。"
-                break
-            }
-            
-            # (C) 檢查日誌是否顯示完成 (如果 BGI 沒關閉)
-            if (Test-Path $BetterGILogPath) {
-                 # 嘗試讀取最後 30 行
-                 $LastLogs = Get-Content $BetterGILogPath -Tail 30 -ErrorAction SilentlyContinue
-                 if ($LastLogs -match "全部任务已结束") {
-                     Write-Log "[ForceEnd] 偵測到日誌: '全部任务已结束'。"
-                     break
-                 }
-            }
-            
-            Start-Sleep -Seconds 5
+            Start-Sleep 10
         }
-
-        # 4.4 最終清理與登出
-        Write-Log "執行最終清理與登出 (Logoff)..."
-        Stop-Process -Name "BetterGI" -Force -ErrorAction SilentlyContinue
-        Stop-Process -Name "YuanShen" -Force -ErrorAction SilentlyContinue
-        Stop-Process -Name "GenshinImpact" -Force -ErrorAction SilentlyContinue
-        
-        # 不建立 Done.flag，因為這不算完成今日目標，只是收尾。
-        # 04:05 Master 再次喚醒時，將會執行新的一天真正的任務。
-        shutdown.exe /l /f
-        exit
+        Stop-Process -Name "YuanShen", "GenshinImpact" -Force -ErrorAction SilentlyContinue
+    } else {
+        Write-Log "⚠️ 無法獲取 Task 2 配置名稱，跳過執行。" "WARN"
     }
-    # --------------------------------------------------------------------------
-
-    # 一般任務監控邏輯
-    $BGIProcess = Get-Process -Name "BetterGI" -ErrorAction SilentlyContinue
-    if (!$BGIProcess) {
-        Write-Log "BetterGI 進程已結束。"
-        if (Test-Path $BetterGILogPath) {
-            $LastLogs = Get-Content $BetterGILogPath -Tail 20
-            if ($LastLogs -match "全部任务已结束") {
-                Write-Log "檢測到任務成功完成。"
-                New-Item -ItemType File -Path $DoneFlag -Force | Out-Null
-                Set-Content -Path "$WorkDir\Configs\LastRun.log" -Value $TodayKey
-            } else {
-                Write-Log "BetterGI 異常退出 (未見成功訊息)。" "ERROR"
-            }
-        }
-        break
-    }
-
-    # 檢查超時
-    if (($CurrentTime - $StartTime).TotalMinutes -gt $TimeoutMinutes) {
-        Write-Log "任務執行超時 ($TimeoutMinutes 分鐘)，強制終止。" "ERROR"
-        Stop-Process -Name "BetterGI" -Force -ErrorAction SilentlyContinue
-        Stop-Process -Name "YuanShen" -Force -ErrorAction SilentlyContinue
-        Stop-Process -Name "GenshinImpact" -Force -ErrorAction SilentlyContinue
-        break
-    }
-
-    Start-Sleep -Seconds 10
 }
 
-# 5. 結束與登出
-Write-Log "Payload 執行結束，執行登出..."
+# 4. 寫入完成並登出
+Write-Log "Payload 執行結束 (Tasks Completed)，建立標記並登出..."
+New-Item -ItemType File -Path $DoneFlag -Force | Out-Null
+Set-Content -Path "$WorkDir\Configs\LastRun.log" -Value $TodayKey
 shutdown.exe /l /f
