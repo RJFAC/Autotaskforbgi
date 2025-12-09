@@ -1,9 +1,9 @@
 # ==============================================================================
-# AutoTask Payload Script V5.31 (Day 1 Double Schedule)
+# AutoTask Payload Script V5.32 (Multi-Config Support)
 # ------------------------------------------------------------------------------
-# V5.31: 新增紊亂期 Day 1 (週三) 的雙重排程邏輯：
-#        04:00 執行一般配置 -> 等待至 10:00 -> 執行紊亂配置。
-# V5.30: 新增 [跨日等待機制] (Smart Wait)。
+# V5.32: 支援讀取 DateConfig.map 中的多重配置 (以逗號分隔)。
+#        Day 8 邏輯更新: Task 1 取第一個配置，Task 2 取第二個配置 (若無則回退預設)。
+# V5.31: 新增紊亂期 Day 1 (週三) 的雙重排程邏輯。
 # ==============================================================================
 
 # 1. 初始化與環境設定
@@ -38,7 +38,7 @@ trap {
 }
 
 # 2. 啟動與跨日檢查 (Smart Wait)
-Write-Log ">>> Payload 啟動 (V5.31 - Day 1 Logic)..."
+Write-Log ">>> Payload 啟動 (V5.32 - Multi-Config)..."
 
 $Now = Get-Date
 if ($Now.Hour -eq 3 -and $Now.Minute -ge 50) {
@@ -65,9 +65,11 @@ if (Test-Path $EnvConfigFile) {
     $GenshinPath = "C:\Program Files\HoYoPlay\games\Genshin Impact Game"
 }
 
-# 讀取 DateConfig.map 決定主要任務 (Task 1)
+# --- [V5.32] 讀取 DateConfig.map 並解析多重任務 ---
 $MapFile = "$WorkDir\Configs\DateConfig.map"
 $TaskName = "Default"
+$Task2Override = $null
+
 if ($Now.Hour -lt 4) { $TodayKey = $Now.AddDays(-1).ToString("yyyyMMdd") } else { $TodayKey = $Now.ToString("yyyyMMdd") }
 Write-Log "計算日期 Key: $TodayKey"
 
@@ -75,7 +77,17 @@ if (Test-Path $MapFile) {
     $MapContent = Get-Content $MapFile
     foreach ($Line in $MapContent) {
         if ($Line -match "^$TodayKey=(.*)") {
-            $TaskName = $Matches[1]; break
+            $RawVal = $Matches[1]
+            if ($RawVal -match ",") {
+                # 偵測到多重配置 (例如 "TaskA,TaskB")
+                $Parts = $RawVal -split ","
+                $TaskName = $Parts[0].Trim()
+                if ($Parts.Count -gt 1) { $Task2Override = $Parts[1].Trim() }
+                Write-Log "偵測到多重配置: Task1=[$TaskName], Task2=[$Task2Override]"
+            } else {
+                $TaskName = $RawVal.Trim()
+            }
+            break
         }
     }
 }
@@ -86,7 +98,7 @@ $BetterGIPath = "C:\AutoTask\BetterGI\BetterGI.exe"
 $BetterGILogPath = "$WorkDir\Logs\BetterGI\BetterGI.log"
 Stop-Process -Name "BetterGI", "YuanShen", "GenshinImpact" -Force -ErrorAction SilentlyContinue
 
-# --- [V5.31 核心: 雙重排程邏輯] ---
+# --- [雙重排程邏輯] ---
 # 判斷是否為紊亂期 Day 1 (Cycle Offset 7.0 ~ 8.0)
 $RefDate = [datetime]"2024-08-28T00:00:00"
 $CycleOffset = ($Now - $RefDate).TotalDays % 42
@@ -118,7 +130,7 @@ Stop-Process -Name "YuanShen", "GenshinImpact" -Force -ErrorAction SilentlyConti
 # 執行 Task 2 (Secondary - if Day 1)
 # ----------------------------
 if ($IsTurbulenceDay1) {
-    Write-Log "準備執行 Task 2 (紊亂配置)..." 
+    Write-Log "準備執行 Task 2 (10:00+)..." 
     
     # A. 等待至 10:00
     $TargetTime = $Now.Date.AddHours(10) # 當天 10:00
@@ -126,21 +138,26 @@ if ($IsTurbulenceDay1) {
         $Diff = $TargetTime - (Get-Date)
         Write-Host "⏳ 等待活動開放 (10:00)... 剩餘 $($Diff.Minutes) 分鐘" -NoNewline -ForegroundColor Yellow
         Start-Sleep 30
-        
-        # 防止等到天荒地老 (例如手動觸發時已經超過下午，這裡會直接跳過)
         if ((Get-Date).Hour -ge 14) { break } 
     }
     Write-Log "`n時間已達 10:00，準備啟動 Task 2。" "GREEN"
 
-    # B. 讀取 Config 獲取紊亂任務名
+    # B. 決定 Task 2 配置 (優先使用 DateConfig 的第二參數，否則使用 WeeklyConfig)
     $Task2Name = $null
-    if (Test-Path $WeeklyConfFile) {
-        try {
-            $WkJson = Get-Content $WeeklyConfFile -Raw | ConvertFrom-Json
-            if ($WkJson.Turbulence -and $WkJson.Turbulence.Wednesday) {
-                $Task2Name = $WkJson.Turbulence.Wednesday
-            }
-        } catch { Write-Log "讀取 WeeklyConfig 失敗: $_" "ERROR" }
+    
+    if ($Task2Override) {
+        $Task2Name = $Task2Override
+        Write-Log "使用 DateConfig 指定的 Task 2: [$Task2Name]"
+    } else {
+        if (Test-Path $WeeklyConfFile) {
+            try {
+                $WkJson = Get-Content $WeeklyConfFile -Raw | ConvertFrom-Json
+                if ($WkJson.Turbulence -and $WkJson.Turbulence.Wednesday) {
+                    $Task2Name = $WkJson.Turbulence.Wednesday
+                    Write-Log "使用 WeeklyConfig 預設的 Task 2: [$Task2Name]"
+                }
+            } catch { Write-Log "讀取 WeeklyConfig 失敗: $_" "ERROR" }
+        }
     }
 
     if ($Task2Name) {
