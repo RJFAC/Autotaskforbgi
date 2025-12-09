@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Dashboard V9.3 - Logic Fix (Day 1 Double Schedule Display)
+# AutoTask Dashboard V9.4 - Logic Fix (Grid Date Display Correction)
 # =============================================================================
 
 # --- [隱藏 Console 黑窗] ---
@@ -47,7 +47,7 @@ $Global:ResinData = @{}
 $Global:InitialHash = ""
 $Script:IsDirty = $false
 $Script:IsLoading = $false
-$WindowTitle = "AutoTask 控制台 V9.3"
+$WindowTitle = "AutoTask 控制台 V9.4"
 
 # 字型
 $MainFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10)
@@ -141,7 +141,7 @@ function Test-GenshinUpdateDay ($CheckDate) {
 }
 
 function Test-TurbulencePeriod ($CheckDate) {
-    # 修正邏輯 V9.2: 精確到小時的紊亂期判斷
+    # 修正邏輯 V9.4: 嚴格判定執行期間
     $RefDate = [datetime]"2024-08-28T00:00:00"
     $Diff = $CheckDate - $RefDate
     
@@ -149,8 +149,11 @@ function Test-TurbulencePeriod ($CheckDate) {
     $CurrentOffset = $Diff.TotalDays % 42
     if ($CurrentOffset -lt 0) { $CurrentOffset += 42 }
 
-    $StartOffset = 7.41666667 # Day 7 + 10/24
-    $EndOffset   = 17.16666667 # Day 17 + 4/24
+    $StartOffset = 7.41666667 # Day 7 + 10/24 (週三 10:00)
+    # [修正] 結束時間微調: 17 + 3.99/24，確保 04:00 (17.1666) 不會被包含
+    # 17.16666667 (硬編碼) 有時會因為浮點數精度導致 04:00 被判定為 True
+    # 這裡改用 17.16 (03:50 左右) 確保 04:00 絕對返回 False
+    $EndOffset   = 17.16 
 
     if ($CurrentOffset -ge $StartOffset -and $CurrentOffset -lt $EndOffset) {
         return [math]::Floor($CurrentOffset)
@@ -166,7 +169,7 @@ function Get-DisplayConfigName ($dateObj) {
         foreach ($line in $map) { if ($line -match "^$dStr=(.+)$") { return "$($matches[1]) (指定)" } }
     }
     
-    # [V9.3 更新] 新增 Day 1 (Wednesday) 雙重排程顯示邏輯
+    # Day 1 (Wednesday) 雙重排程顯示邏輯
     $RefDate = [datetime]"2024-08-28T00:00:00"
     $SimOffset = ($dateObj.AddHours(4) - $RefDate).TotalDays % 42
     if ($SimOffset -lt 0) { $SimOffset += 42 }
@@ -178,7 +181,6 @@ function Get-DisplayConfigName ($dateObj) {
         return "$def + $turb (雙重)"
     }
 
-    # 這裡也要用 +4 小時去判斷顯示，因為 Dashboard 通常是預覽「執行時」的狀況
     if (Test-TurbulencePeriod $dateObj.AddHours(4)) {
         $tConf = $Global:TurbulenceRules.$dWeek
         if ($tConf) { return "$tConf (紊亂期)" }
@@ -275,7 +277,16 @@ function Update-StatusUI {
     $st = Get-StatusText
     $finalConf = Get-DisplayConfigName $today
     if (Test-Path $PauseLog) { if ((Get-Content $PauseLog) -contains $today.ToString("yyyyMMdd")) { $finalConf = "PAUSED" } }
-    $Note = ""; if (Test-GenshinUpdateDay $today) { $Note = " (⚠️ 版本更新日)" }; $ITDay = Test-TurbulencePeriod (Get-Date); if ($ITDay -gt 0) { $Note = " (🔥 紊亂期 Day $ITDay)" }
+    $Note = ""; if (Test-GenshinUpdateDay $today) { $Note = " (⚠️ 版本更新日)" }; 
+    # [UI Fix] 這裡也使用 1-based 版本天數顯示
+    $RefDate = [datetime]"2024-08-28T00:00:00"
+    $SimOffset = ($today.AddHours(4) - $RefDate).TotalDays % 42
+    if ($SimOffset -lt 0) { $SimOffset += 42 }
+    
+    if ($SimOffset -ge 7.4 -and $SimOffset -lt 17.2) {
+        $DayNum = [math]::Floor($SimOffset) + 1
+        $Note = " (🔥 紊亂期 Day $DayNum)" 
+    }
     $lblInfo.Text = "今日: $($today.ToString('yyyy/MM/dd')) ($($today.DayOfWeek))$Note`n配置: $finalConf`n狀態: $($st.Text)"; $lblInfo.ForeColor = $st.Color
 }
 
@@ -292,25 +303,43 @@ function Load-GridData {
     $MapData=@{}; if(Test-Path $DateMap){Get-Content $DateMap|ForEach{if($_-match"^(\d{8})=(.+)$"){$MapData[$matches[1]]=$matches[2]}}}
     $PauseData=@(); if(Test-Path $PauseLog){$PauseData=Get-Content $PauseLog}
     $NoShutData=@(); if(Test-Path $NoShutdownLog){$NoShutData=Get-Content $NoShutdownLog}
-    
+    $RefDate = [datetime]"2024-08-28T00:00:00"
+
     $Start=(Get-Date).AddHours(-4).Date; 
     for($i=0;$i-lt 90;$i++){ 
         $d=$Start.AddDays($i); $dS=$d.ToString("yyyyMMdd"); $wS=$d.DayOfWeek.ToString(); 
         $def=$Global:WeeklyRules[$wS]; 
         
-        # [邏輯修正] 使用 $d.AddHours(4) 模擬執行時間 (04:00) 的狀態
-        # 這樣週六 (Day 17) 04:00 時會因為已過 03:59 而返回 False，正確回歸預設
         $SimulatedExecTime = $d.AddHours(4)
         $ITDay=Test-TurbulencePeriod $SimulatedExecTime; 
         
+        # Day 1 Double Schedule 偵測
+        $SimOffset = ($SimulatedExecTime - $RefDate).TotalDays % 42
+        if ($SimOffset -lt 0) { $SimOffset += 42 }
+        
+        $DayLabel = ""
+        # 顯示邏輯 V9.4: 使用 1-based 版本天數
+        # Day 8 (Offset 7.0 ~ 8.0): 雖然 04:00 未開始，但為了標示，我們顯示 Day 8
+        if ($SimOffset -ge 7.0 -and $SimOffset -lt 8.0) {
+            $DayLabel = "Day 8 (Start 10:00)"
+            $def += " + 紊亂" # 提示雙重排程
+        } elseif ($ITDay -gt 0) {
+            # 正常期: Day 9 (Offset 8) ~ Day 17 (Offset 16)
+            # Offset 8 -> Day 9
+            $DayNum = $ITDay + 1
+            $DayLabel = "Day $DayNum"
+        }
+        # Day 18 (Offset 17.16) -> $ITDay 現在會回傳 0，所以不顯示標籤，正確。
+
         if($ITDay-gt 0){$tConf=$Global:TurbulenceRules[$wS];if($tConf){$def="$tConf"}}; 
         $cur=$def; $isO=$false; $isP=$false; 
         if($PauseData-contains $dS){$cur="PAUSE";$isP=$true}elseif($MapData.ContainsKey($dS)){$cur=$MapData[$dS];$isO=$true}; 
         $isS=$NoShutData-contains $dS; 
         
         if(Test-TurbulencePeriod $SimulatedExecTime){if($Global:TurbulenceNoShut[$wS]){$isS=$true}}else{if($Global:WeeklyNoShut[$wS]){$isS=$true}}; 
+        
         $note=""; if(Test-GenshinUpdateDay $d){$note="⚠️ 版本更新"}; 
-        if($ITDay-gt 0){$note+=" 🔥 紊亂(Day$ITDay)"}; 
+        if($DayLabel){$note+=" 🔥 紊亂($DayLabel)"}; 
         
         $idx=$grid.Rows.Add($d.ToString("yyyy/MM/dd"),$wS,$def,$cur,$isS,$note); 
         $row=$grid.Rows[$idx]; $row.Tag=$dS; 
