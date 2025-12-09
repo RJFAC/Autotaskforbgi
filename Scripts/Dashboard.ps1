@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Dashboard V9.5 - Logic Fix (Selector Pre-fill & Grid UX)
+# AutoTask Dashboard V9.7 - Logic Fix (Day 8 Default with WAIT)
 # =============================================================================
 
 # --- [隱藏 Console 黑窗] ---
@@ -31,7 +31,6 @@ $BetterGI_UserDir = "C:\Program Files\BetterGI\User\OneDragon"
 $MasterScript = "$ScriptDir\Master.ps1"
 $StopScript = "$ScriptDir\StopAll.ps1"
 $PublishScript = "$ScriptDir\PublishRelease.ps1"
-# [更新] 新增功能路徑
 $SnapshotScript = "$ScriptDir\Task_Snapshot.ps1"
 $DiscordSetupScript = "$ScriptDir\Setup_Discord.ps1"
 $HashFile = "$ConfigsDir\ScriptHash.txt"
@@ -47,7 +46,7 @@ $Global:ResinData = @{}
 $Global:InitialHash = ""
 $Script:IsDirty = $false
 $Script:IsLoading = $false
-$WindowTitle = "AutoTask 控制台 V9.5"
+$WindowTitle = "AutoTask 控制台 V9.7"
 
 # 字型
 $MainFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10)
@@ -133,7 +132,6 @@ function Load-ResinConfig {
 }
 
 function Test-GenshinUpdateDay ($CheckDate) {
-    # 判斷是否為版本更新當日 (00:00 基準)
     $RefDate = [datetime]"2024-08-28"
     $DiffDays = ($CheckDate.Date - $RefDate).Days
     if ($DiffDays -ge 0 -and ($DiffDays % 42) -eq 0) { return $true }
@@ -141,18 +139,12 @@ function Test-GenshinUpdateDay ($CheckDate) {
 }
 
 function Test-TurbulencePeriod ($CheckDate) {
-    # 修正邏輯 V9.4: 嚴格判定執行期間
     $RefDate = [datetime]"2024-08-28T00:00:00"
     $Diff = $CheckDate - $RefDate
-    
-    # 計算週期內的 Offset
     $CurrentOffset = $Diff.TotalDays % 42
     if ($CurrentOffset -lt 0) { $CurrentOffset += 42 }
-
-    $StartOffset = 7.41666667 # Day 7 + 10/24 (週三 10:00)
-    # [修正] 結束時間微調: 17 + 3.99/24，確保 04:00 (17.1666) 不會被包含
+    $StartOffset = 7.41666667 
     $EndOffset   = 17.16 
-
     if ($CurrentOffset -ge $StartOffset -and $CurrentOffset -lt $EndOffset) {
         return [math]::Floor($CurrentOffset)
     }
@@ -176,7 +168,9 @@ function Get-DisplayConfigName ($dateObj) {
     if ($SimOffset -ge 7.0 -and $SimOffset -lt 8.0) {
         $def = $Global:WeeklyRules.$dWeek
         $turb = $Global:TurbulenceRules.$dWeek
-        return "$def,$turb"
+        if (-not $turb) { $turb = $def } # 防呆
+        # [Fix] 明確插入 [WAIT] 標記，確保預設顯示正確
+        return "$def,[WAIT],$turb"
     }
 
     if (Test-TurbulencePeriod $dateObj.AddHours(4)) {
@@ -238,20 +232,28 @@ function Show-ConfigSelectorGUI {
     $lblDst = New-Object System.Windows.Forms.Label; $lblDst.Text="執行佇列"; $lblDst.Location="380,10"; $lblDst.AutoSize=$true
     $listDst = New-Object System.Windows.Forms.ListBox; $listDst.Location="380,30"; $listDst.Size="250,350"; $listDst.SelectionMode="One"; $listDst.AllowDrop=$true 
     if (-not [string]::IsNullOrWhiteSpace($CurrentSelection) -and $CurrentSelection -ne "PAUSE") { 
-        # [V9.5] Trim 處理，避免手動編輯產生的空白導致不匹配
         $parts = $CurrentSelection -split "," | ForEach-Object { $_.Trim() }
         foreach ($p in $parts) { if($p){$listDst.Items.Add($p) | Out-Null} } 
     }
+    
     $btnAdd = New-Object System.Windows.Forms.Button; $btnAdd.Text="加入 ->"; $btnAdd.Location="280,100"; $btnAdd.Size="90,30"; $btnAdd.Add_Click({ if($listDst.Items.Contains("PAUSE")){$listDst.Items.Clear()}; foreach ($item in $listSrc.SelectedItems) { $listDst.Items.Add($item) | Out-Null } })
-    $btnRem = New-Object System.Windows.Forms.Button; $btnRem.Text="<- 移除"; $btnRem.Location="280,150"; $btnRem.Size="90,30"; $btnRem.Add_Click({ if ($listDst.SelectedIndex -ge 0) { $listDst.Items.RemoveAt($listDst.SelectedIndex) } })
-    $btnPause = New-Object System.Windows.Forms.Button; $btnPause.Text="⛔ 設為暫停"; $btnPause.Location="280,250"; $btnPause.Size="90,30"; $btnPause.BackColor="LightCoral"; $btnPause.Add_Click({ $listDst.Items.Clear(); $listDst.Items.Add("PAUSE") | Out-Null })
-    $btnClear = New-Object System.Windows.Forms.Button; $btnClear.Text="❌ 清空"; $btnClear.Location="280,300"; $btnClear.Size="90,30"; $btnClear.Add_Click({ $listDst.Items.Clear() })
+    
+    # [Wait 按鈕]
+    $btnWait = New-Object System.Windows.Forms.Button; $btnWait.Text="⏰ 插入等待"; $btnWait.Location="280,150"; $btnWait.Size="90,30"; $btnWait.BackColor="LightYellow"
+    $btnWait.Add_Click({ if (-not $listDst.Items.Contains("[WAIT]")) { $listDst.Items.Add("[WAIT]") | Out-Null } })
+
+    $btnRem = New-Object System.Windows.Forms.Button; $btnRem.Text="<- 移除"; $btnRem.Location="280,200"; $btnRem.Size="90,30"; $btnRem.Add_Click({ if ($listDst.SelectedIndex -ge 0) { $listDst.Items.RemoveAt($listDst.SelectedIndex) } })
+    $btnPause = New-Object System.Windows.Forms.Button; $btnPause.Text="⛔ 設為暫停"; $btnPause.Location="280,300"; $btnPause.Size="90,30"; $btnPause.BackColor="LightCoral"; $btnPause.Add_Click({ $listDst.Items.Clear(); $listDst.Items.Add("PAUSE") | Out-Null })
+    $btnClear = New-Object System.Windows.Forms.Button; $btnClear.Text="❌ 清空"; $btnClear.Location="280,350"; $btnClear.Size="90,30"; $btnClear.Add_Click({ $listDst.Items.Clear() })
+    
     $btnOk = New-Object System.Windows.Forms.Button; $btnOk.Text="確定"; $btnOk.Location="250,420"; $btnOk.DialogResult="OK"; $btnOk.BackColor="LightGreen"; $btnOk.Size="100,40"
     $btnCancel = New-Object System.Windows.Forms.Button; $btnCancel.Text="取消"; $btnCancel.Location="360,420"; $btnCancel.DialogResult="Cancel"; $btnCancel.Size="100,40"
+    
     $listDst.Add_MouseDown({ param($s,$e); if($listDst.SelectedItem) { $listDst.DoDragDrop($listDst.SelectedItem, [System.Windows.Forms.DragDropEffects]::Move) } })
     $listDst.Add_DragOver({ param($s,$e); $e.Effect=[System.Windows.Forms.DragDropEffects]::Move })
     $listDst.Add_DragDrop({ param($s,$e); $idx=$listDst.IndexFromPoint($listDst.PointToClient([System.Drawing.Point]::new($e.X,$e.Y))); if($idx -lt 0){$idx=$listDst.Items.Count-1}; $item=$e.Data.GetData([string]); if($item){$listDst.Items.Remove($item); $listDst.Items.Insert($idx,$item); $listDst.SelectedIndex=$idx} })
-    $SelForm.Controls.AddRange(@($lblSrc, $listSrc, $lblDst, $listDst, $btnAdd, $btnRem, $btnPause, $btnClear, $btnOk, $btnCancel)); $SelForm.AcceptButton = $btnOk; if ($SelForm.ShowDialog() -eq "OK") { $f=@(); foreach($i in $listDst.Items){$f+=$i}; return ($f -join ",") } else { return $null }
+    
+    $SelForm.Controls.AddRange(@($lblSrc, $listSrc, $lblDst, $listDst, $btnAdd, $btnWait, $btnRem, $btnPause, $btnClear, $btnOk, $btnCancel)); $SelForm.AcceptButton = $btnOk; if ($SelForm.ShowDialog() -eq "OK") { $f=@(); foreach($i in $listDst.Items){$f+=$i}; return ($f -join ",") } else { return $null }
 }
 
 # --- GUI 初始化 ---
@@ -280,11 +282,9 @@ function Update-StatusUI {
     $finalConf = Get-DisplayConfigName $today
     if (Test-Path $PauseLog) { if ((Get-Content $PauseLog) -contains $today.ToString("yyyyMMdd")) { $finalConf = "PAUSED" } }
     $Note = ""; if (Test-GenshinUpdateDay $today) { $Note = " (⚠️ 版本更新日)" }; 
-    # [UI Fix] 這裡也使用 1-based 版本天數顯示
     $RefDate = [datetime]"2024-08-28T00:00:00"
     $SimOffset = ($today.AddHours(4) - $RefDate).TotalDays % 42
     if ($SimOffset -lt 0) { $SimOffset += 42 }
-    
     if ($SimOffset -ge 7.4 -and $SimOffset -lt 17.2) {
         $DayNum = [math]::Floor($SimOffset) + 1
         $Note = " (🔥 紊亂期 Day $DayNum)" 
@@ -298,20 +298,14 @@ $grid = New-Object System.Windows.Forms.DataGridView; $grid.Dock="Fill"; $grid.E
 $grid.Columns.Add("Date","日期"); $grid.Columns[0].ReadOnly=$true; $grid.Columns[0].Width=120; $grid.Columns.Add("Week","星期"); $grid.Columns[1].ReadOnly=$true; $grid.Columns[1].Width=60; $grid.Columns.Add("Def","每週預設"); $grid.Columns[2].ReadOnly=$true; $grid.Columns[2].Width=100; $grid.Columns.Add("Conf","執行配置 (雙擊)"); $grid.Columns[3].Width=250; $grid.Columns.Add("Shut","不關機"); $grid.Columns[4].Width=60; $grid.Columns[4].CellTemplate=New-Object System.Windows.Forms.DataGridViewCheckBoxCell; $grid.Columns.Add("Note","備註"); $grid.Columns[5].ReadOnly=$true; $grid.Columns[5].Width=150
 $grid.Add_CellClick({ param($s,$e); if($e.RowIndex-lt 0){return}; if($e.ColumnIndex-eq 4){ $c=$grid.Rows[$e.RowIndex].Cells[4]; $v=-not [bool]$c.Value; $sel=$grid.SelectedCells|Where{$_.ColumnIndex-eq 4}; if($sel.Count-gt 0 -and ($sel|Where{$_.RowIndex-eq $e.RowIndex})){foreach($x in $sel){$x.Value=$v}}else{$c.Value=$v}; Mark-Dirty } })
 
-# [V9.5 關鍵修正] 雙擊時不清除預設值，而是直接傳入選擇器
 $grid.Add_CellDoubleClick({ param($s,$e); 
     if($e.RowIndex-lt 0-or $e.ColumnIndex-ne 3){return}; 
     $c=$grid.Rows[$e.RowIndex].Cells[3]; 
-    $def=$grid.Rows[$e.RowIndex].Cells[2].Value; # 取得預設值
+    $def=$grid.Rows[$e.RowIndex].Cells[2].Value; 
     $cv=$c.Value; 
-    
-    # 僅當是 PAUSE 時清除，否則保留目前值 (包含預設值)
     if($cv-eq "PAUSE"){$cv=""}; 
-    
     $n=Show-ConfigSelectorGUI $cv; 
-    
     if($n-ne $null){ 
-        # 若結果為空或等於預設值，則還原樣式
         if($n-eq "" -or $n -eq $def){ 
             $c.Value=$def; 
             $c.Style.BackColor="White"; 
@@ -344,26 +338,19 @@ function Load-GridData {
         $SimulatedExecTime = $d.AddHours(4)
         $ITDay=Test-TurbulencePeriod $SimulatedExecTime; 
         
-        # Day 1 Double Schedule 偵測
         $SimOffset = ($SimulatedExecTime - $RefDate).TotalDays % 42
         if ($SimOffset -lt 0) { $SimOffset += 42 }
         
         $DayLabel = ""
-        # 顯示邏輯 V9.4: 使用 1-based 版本天數
-        # Day 8 (Offset 7.0 ~ 8.0): 雖然 04:00 未開始，但為了標示，我們顯示 Day 8
         if ($SimOffset -ge 7.0 -and $SimOffset -lt 8.0) {
             $DayLabel = "Day 8 (Start 10:00)"
-            # [Fix] 這裡改用逗號分隔，讓 Selector 預設能讀取成兩個任務
             $turb = $Global:TurbulenceRules[$wS]
             if(-not $turb){$turb="紊亂配置"}
-            $def += ",$turb" # 提示雙重排程 (格式: Task1,Task2)
+            $def += ",[WAIT],$turb" 
         } elseif ($ITDay -gt 0) {
-            # 正常期: Day 9 (Offset 8) ~ Day 17 (Offset 16)
-            # Offset 8 -> Day 9
             $DayNum = $ITDay + 1
             $DayLabel = "Day $DayNum"
         }
-        # Day 18 (Offset 17.16) -> $ITDay 現在會回傳 0，所以不顯示標籤，正確。
 
         if($ITDay-gt 0){$tConf=$Global:TurbulenceRules[$wS];if($tConf){$def="$tConf"}}; 
         $cur=$def; $isO=$false; $isP=$false; 
