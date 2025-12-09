@@ -1,4 +1,4 @@
-﻿<#
+<#
     .SYNOPSIS
     Discord Webhook 通知模組 (V2.2 Stable)
     .DESCRIPTION

@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     AutoTask Snapshot Tool V2.8
     用於打包所有腳本、設定檔與最近日誌，供 AI 進行除錯分析。
