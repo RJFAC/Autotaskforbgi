@@ -1,21 +1,33 @@
 <#
 .SYNOPSIS
-    AutoTask Snapshot Tool V2.11
+    AutoTask Snapshot Tool V2.12 (Debug & Fix Path)
     用於打包所有腳本、設定檔與最近日誌，供 AI 進行除錯分析。
-    V2.11: 修正 BetterGI 日誌擷取路徑為 "C:\Program Files\BetterGI\log"。
+    V2.12: 
+    1. 修正 BetterGI 日誌路徑為 "C:\Program Files\BetterGI\log"。
+    2. 新增 Global Trap 與 Read-Host，確保程式發生錯誤時不會閃退，讓使用者能閱讀紅字。
 #>
 
-$SnapshotVersion = "V2.11"
+$SnapshotVersion = "V2.12"
 $SourceDir = "C:\AutoTask"
 $OutputDir = "C:\AutoTask_Snapshots"
 $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $ZipName = "AutoTask_Snapshot_$Timestamp.zip"
 $ZipPath = Join-Path $OutputDir $ZipName
 
+# --- [防閃退機制] ---
+trap {
+    Write-Host "`n[CRITICAL ERROR] 發生嚴重錯誤：" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    Write-Host "位置: $($_.InvocationInfo.ScriptLineNumber) 行" -ForegroundColor Red
+    Read-Host "按 Enter 鍵退出..."
+    exit 1
+}
+
 # 核心分析文件路徑
 $CoreDocPath = "$SourceDir\Scripts\AutoTask_Core_Analysis.md"
 if (-not (Test-Path $CoreDocPath)) { $CoreDocPath = "$SourceDir\AutoTask_Core_Analysis.md" }
 
+# 建立暫存目錄結構
 $TempDir = Join-Path $OutputDir "Temp_$Timestamp"
 $TempSource = Join-Path $TempDir "1_Source_Code"
 $TempConfigs = Join-Path $TempDir "2_Configs"
@@ -71,13 +83,18 @@ foreach ($File in $ConfigFiles) {
 $TasksToExport = @("Auto_1Remote_Master", "Auto_BetterGI_Payload")
 foreach ($TaskName in $TasksToExport) {
     try {
-        $TempXmlPath = Join-Path $TempDir "$TaskName.xml"
-        Export-ScheduledTask -TaskName $TaskName | Out-File -FilePath $TempXmlPath -Encoding UTF8
-        $FileBlock = "`r`n######################################################################`r`nFILE: $TaskName.xml`r`n######################################################################`r`n`r`n"
-        Add-Content -Path $CombinedConfigFile -Value $FileBlock -Encoding UTF8
-        Add-Content -Path $CombinedConfigFile -Value (Get-Content $TempXmlPath -Raw) -Encoding UTF8
-        Remove-Item -Path $TempXmlPath -Force
-    } catch {}
+        $TaskInfo = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        if ($TaskInfo) {
+            $TempXmlPath = Join-Path $TempDir "$TaskName.xml"
+            Export-ScheduledTask -TaskName $TaskName | Out-File -FilePath $TempXmlPath -Encoding UTF8
+            $FileBlock = "`r`n######################################################################`r`nFILE: $TaskName.xml`r`n######################################################################`r`n`r`n"
+            Add-Content -Path $CombinedConfigFile -Value $FileBlock -Encoding UTF8
+            Add-Content -Path $CombinedConfigFile -Value (Get-Content $TempXmlPath -Raw) -Encoding UTF8
+            Remove-Item -Path $TempXmlPath -Force
+        }
+    } catch {
+        Write-Warning "匯出排程 $TaskName 失敗: $($_.Exception.Message)"
+    }
 }
 
 # ==============================================================================
@@ -87,19 +104,27 @@ Write-Host " -> 3/4 正在生成日誌摘要..."
 
 function Get-SmartLogContent {
     param ( [string]$FilePath )
-    $FileInfo = Get-Item $FilePath
-    if ($FileInfo.Length -gt 2MB) {
-        $Content = Get-Content -Path $FilePath -Tail 5000 -Raw
-        if ($Content.Length -gt 2MB) { $Content = $Content.Substring($Content.Length - 2MB) }
-        return "[TRUNCATED] ...`r`n`r`n" + $Content
-    } else {
-        return Get-Content -Path $FilePath -Raw
+    try {
+        $FileInfo = Get-Item $FilePath
+        # 使用 FileStream 以 ReadOnly 模式開啟，避免鎖定錯誤
+        $Stream = [System.IO.File]::Open($FilePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        $Reader = New-Object System.IO.StreamReader($Stream)
+        $Content = $Reader.ReadToEnd()
+        $Reader.Close(); $Stream.Close()
+
+        if ($Content.Length -gt 2MB) {
+            $Content = $Content.Substring($Content.Length - 2MB)
+            return "[TRUNCATED] ...`r`n`r`n" + $Content
+        }
+        return $Content
+    } catch {
+        return "[ERROR READ LOG] $($_.Exception.Message)"
     }
 }
 
 $LogsDir = "$SourceDir\Logs"
 $RemoteLogsDir = "$SourceDir\1Remote\Log"
-# [V2.11 Fix] 更新 BetterGI 日誌路徑為 "log"
+# [V2.12 Fix] 更新 BetterGI 日誌路徑為 "log" (小寫)
 $BetterGILogsDir = "C:\Program Files\BetterGI\log"
 
 $LogsOutFile = Join-Path $TempLogs "Recent_Logs_Summary.txt"
@@ -108,7 +133,11 @@ Set-Content -Path $LogsOutFile -Value "=== [ Recent Logs Summary ] ===`r`n" -Enc
 $LogTargets = @()
 if (Test-Path $LogsDir) { $LogTargets += Get-ChildItem -Path $LogsDir -Filter "*.log" | Sort LastWriteTime -Desc | Select -First 2 }
 if (Test-Path $RemoteLogsDir) { $LogTargets += Get-ChildItem -Path $RemoteLogsDir -Filter "*.md" | Sort LastWriteTime -Desc | Select -First 2 }
-if (Test-Path $BetterGILogsDir) { $LogTargets += Get-ChildItem -Path $BetterGILogsDir -Filter "*.log" | Sort LastWriteTime -Desc | Select -First 2 }
+if (Test-Path $BetterGILogsDir) { 
+    $LogTargets += Get-ChildItem -Path $BetterGILogsDir -Filter "*.log" | Sort LastWriteTime -Desc | Select -First 2 
+} else {
+    Write-Warning "找不到 BetterGI 日誌目錄: $BetterGILogsDir"
+}
 
 foreach ($File in $LogTargets) {
     if ($null -eq $File) { continue }
@@ -122,7 +151,18 @@ foreach ($File in $LogTargets) {
 # 4. 壓縮
 # ==============================================================================
 Write-Host " -> 4/4 正在壓縮打包..."
-Compress-Archive -Path "$TempDir\*" -DestinationPath $ZipPath -Force
+try {
+    Compress-Archive -Path "$TempDir\*" -DestinationPath $ZipPath -Force -ErrorAction Stop
+} catch {
+    Write-Host "壓縮失敗！可能原因：檔案被鎖定或權限不足。" -ForegroundColor Red
+    Write-Host "錯誤訊息: $($_.Exception.Message)" -ForegroundColor Red
+    Read-Host "按 Enter 鍵退出..."
+    exit 1
+}
+
 Remove-Item -Path $TempDir -Recurse -Force
 Write-Host "`r`n[完成] 快照已儲存至: $ZipPath" -ForegroundColor Green
+
+# 這裡加入 Read-Host 防止視窗立刻關閉
+Read-Host "作業完成。按 Enter 鍵關閉視窗..."
 Start-Process "explorer.exe" -ArgumentList "/select,`"$ZipPath`""
