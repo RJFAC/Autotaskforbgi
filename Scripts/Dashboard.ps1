@@ -1,5 +1,5 @@
 # =============================================================================
-# AutoTask Dashboard V9.4 - Logic Fix (Grid Date Display Correction)
+# AutoTask Dashboard V9.5 - Logic Fix (Selector Pre-fill & Grid UX)
 # =============================================================================
 
 # --- [隱藏 Console 黑窗] ---
@@ -47,7 +47,7 @@ $Global:ResinData = @{}
 $Global:InitialHash = ""
 $Script:IsDirty = $false
 $Script:IsLoading = $false
-$WindowTitle = "AutoTask 控制台 V9.4"
+$WindowTitle = "AutoTask 控制台 V9.5"
 
 # 字型
 $MainFont = New-Object System.Drawing.Font("Microsoft JhengHei UI", 10)
@@ -151,8 +151,6 @@ function Test-TurbulencePeriod ($CheckDate) {
 
     $StartOffset = 7.41666667 # Day 7 + 10/24 (週三 10:00)
     # [修正] 結束時間微調: 17 + 3.99/24，確保 04:00 (17.1666) 不會被包含
-    # 17.16666667 (硬編碼) 有時會因為浮點數精度導致 04:00 被判定為 True
-    # 這裡改用 17.16 (03:50 左右) 確保 04:00 絕對返回 False
     $EndOffset   = 17.16 
 
     if ($CurrentOffset -ge $StartOffset -and $CurrentOffset -lt $EndOffset) {
@@ -239,7 +237,11 @@ function Show-ConfigSelectorGUI {
     $RealConfigs = $Global:ConfigList | Where-Object { $_ -ne "PAUSE" }; $listSrc.Items.AddRange($RealConfigs)
     $lblDst = New-Object System.Windows.Forms.Label; $lblDst.Text="執行佇列"; $lblDst.Location="380,10"; $lblDst.AutoSize=$true
     $listDst = New-Object System.Windows.Forms.ListBox; $listDst.Location="380,30"; $listDst.Size="250,350"; $listDst.SelectionMode="One"; $listDst.AllowDrop=$true 
-    if (-not [string]::IsNullOrWhiteSpace($CurrentSelection) -and $CurrentSelection -ne "PAUSE") { $parts = $CurrentSelection -split ","; foreach ($p in $parts) { if($p){$listDst.Items.Add($p) | Out-Null} } }
+    if (-not [string]::IsNullOrWhiteSpace($CurrentSelection) -and $CurrentSelection -ne "PAUSE") { 
+        # [V9.5] Trim 處理，避免手動編輯產生的空白導致不匹配
+        $parts = $CurrentSelection -split "," | ForEach-Object { $_.Trim() }
+        foreach ($p in $parts) { if($p){$listDst.Items.Add($p) | Out-Null} } 
+    }
     $btnAdd = New-Object System.Windows.Forms.Button; $btnAdd.Text="加入 ->"; $btnAdd.Location="280,100"; $btnAdd.Size="90,30"; $btnAdd.Add_Click({ if($listDst.Items.Contains("PAUSE")){$listDst.Items.Clear()}; foreach ($item in $listSrc.SelectedItems) { $listDst.Items.Add($item) | Out-Null } })
     $btnRem = New-Object System.Windows.Forms.Button; $btnRem.Text="<- 移除"; $btnRem.Location="280,150"; $btnRem.Size="90,30"; $btnRem.Add_Click({ if ($listDst.SelectedIndex -ge 0) { $listDst.Items.RemoveAt($listDst.SelectedIndex) } })
     $btnPause = New-Object System.Windows.Forms.Button; $btnPause.Text="⛔ 設為暫停"; $btnPause.Location="280,250"; $btnPause.Size="90,30"; $btnPause.BackColor="LightCoral"; $btnPause.Add_Click({ $listDst.Items.Clear(); $listDst.Items.Add("PAUSE") | Out-Null })
@@ -295,7 +297,36 @@ $TabGrid = New-Object System.Windows.Forms.TabPage; $TabGrid.Text = "[GRID] 排�
 $grid = New-Object System.Windows.Forms.DataGridView; $grid.Dock="Fill"; $grid.EditMode="EditProgrammatically"; $grid.Font=$MonoFont; $grid.MultiSelect=$true
 $grid.Columns.Add("Date","日期"); $grid.Columns[0].ReadOnly=$true; $grid.Columns[0].Width=120; $grid.Columns.Add("Week","星期"); $grid.Columns[1].ReadOnly=$true; $grid.Columns[1].Width=60; $grid.Columns.Add("Def","每週預設"); $grid.Columns[2].ReadOnly=$true; $grid.Columns[2].Width=100; $grid.Columns.Add("Conf","執行配置 (雙擊)"); $grid.Columns[3].Width=250; $grid.Columns.Add("Shut","不關機"); $grid.Columns[4].Width=60; $grid.Columns[4].CellTemplate=New-Object System.Windows.Forms.DataGridViewCheckBoxCell; $grid.Columns.Add("Note","備註"); $grid.Columns[5].ReadOnly=$true; $grid.Columns[5].Width=150
 $grid.Add_CellClick({ param($s,$e); if($e.RowIndex-lt 0){return}; if($e.ColumnIndex-eq 4){ $c=$grid.Rows[$e.RowIndex].Cells[4]; $v=-not [bool]$c.Value; $sel=$grid.SelectedCells|Where{$_.ColumnIndex-eq 4}; if($sel.Count-gt 0 -and ($sel|Where{$_.RowIndex-eq $e.RowIndex})){foreach($x in $sel){$x.Value=$v}}else{$c.Value=$v}; Mark-Dirty } })
-$grid.Add_CellDoubleClick({ param($s,$e); if($e.RowIndex-lt 0-or $e.ColumnIndex-ne 3){return}; $c=$grid.Rows[$e.RowIndex].Cells[3]; $cv=$c.Value; if($cv-eq $grid.Rows[$e.RowIndex].Cells[2].Value-or $cv-eq "PAUSE"){$cv=""}; $n=Show-ConfigSelectorGUI $cv; if($n-ne $null){ if($n-eq""){ $c.Value=$grid.Rows[$e.RowIndex].Cells[2].Value; $c.Style.BackColor="White"; $c.Style.ForeColor="Black"; $c.Style.Font=$MonoFont }else{ $c.Value=$n; $c.Style.ForeColor="Blue"; $c.Style.Font=$BoldFont; $c.Style.BackColor="White" }; Mark-Dirty } })
+
+# [V9.5 關鍵修正] 雙擊時不清除預設值，而是直接傳入選擇器
+$grid.Add_CellDoubleClick({ param($s,$e); 
+    if($e.RowIndex-lt 0-or $e.ColumnIndex-ne 3){return}; 
+    $c=$grid.Rows[$e.RowIndex].Cells[3]; 
+    $def=$grid.Rows[$e.RowIndex].Cells[2].Value; # 取得預設值
+    $cv=$c.Value; 
+    
+    # 僅當是 PAUSE 時清除，否則保留目前值 (包含預設值)
+    if($cv-eq "PAUSE"){$cv=""}; 
+    
+    $n=Show-ConfigSelectorGUI $cv; 
+    
+    if($n-ne $null){ 
+        # 若結果為空或等於預設值，則還原樣式
+        if($n-eq "" -or $n -eq $def){ 
+            $c.Value=$def; 
+            $c.Style.BackColor="White"; 
+            $c.Style.ForeColor="Black"; 
+            $c.Style.Font=$MonoFont 
+        }else{ 
+            $c.Value=$n; 
+            $c.Style.ForeColor="Blue"; 
+            $c.Style.Font=$BoldFont; 
+            $c.Style.BackColor="White" 
+        }; 
+        Mark-Dirty 
+    } 
+})
+
 $grid.Add_KeyDown({ param($s,$e); if($e.KeyCode-eq "Delete"){ foreach($c in $grid.SelectedCells){ if($c.ColumnIndex-eq 3){ $def=$grid.Rows[$c.RowIndex].Cells[2].Value; $c.Value=$def; $c.Style.BackColor = "White"; $c.Style.ForeColor = "Black"; $c.Style.Font = $MonoFont; Mark-Dirty } } }; if($e.Control-and $e.KeyCode-eq "V"){ $t=[Windows.Forms.Clipboard]::GetText().Trim(); if($t){ foreach($c in $grid.SelectedCells){ if($c.ColumnIndex-eq 3){ $c.Value=$t; if($t-eq"PAUSE"){ $c.Style.BackColor="LightCoral";$c.Style.ForeColor="White" }else{ $c.Style.ForeColor="Blue";$c.Style.Font=$BoldFont;$c.Style.BackColor="White" }; Mark-Dirty } } } } })
 
 function Load-GridData { 
