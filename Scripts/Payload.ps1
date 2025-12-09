@@ -1,6 +1,7 @@
 # ==============================================================================
-# AutoTask Payload Script V5.38 (Fix Log Path)
+# AutoTask Payload Script V5.39 (OneDragon Mode Force)
 # ------------------------------------------------------------------------------
+# V5.39: 強制將所有任務視為「一條龍配置組」，使用 --startOneDragon 參數啟動。
 # V5.38: 修正 BetterGI 日誌路徑為 "C:\Program Files\BetterGI\log\"。
 # V5.37: Install Path Fix.
 # ==============================================================================
@@ -36,7 +37,7 @@ trap {
 }
 
 # 2. 啟動與跨日檢查 (Smart Wait)
-Write-Log ">>> Payload 啟動 (V5.38 - Log Path Fix)..."
+Write-Log ">>> Payload 啟動 (V5.39 - OneDragon Mode)..."
 
 $Now = Get-Date
 if ($Now.Hour -eq 3 -and $Now.Minute -ge 50) {
@@ -191,7 +192,10 @@ for ($i = 0; $i -lt $TaskList.Count; $i++) {
     if ($CurrentTask -eq "[WAIT]") { continue }
 
     Write-Log "啟動 BetterGI [$($i+1)/$($TaskList.Count)]: $CurrentTask"
-    $ArgsList = "-start -task `"$CurrentTask`""
+    
+    # [V5.39] 強制使用 --startOneDragon 參數
+    # 根據定義，所有 payload 啟動的任務均為一條龍配置組
+    $ArgsList = "--startOneDragon `"$CurrentTask`""
     
     $Process = Start-Process -FilePath $BetterGIPath -ArgumentList $ArgsList -WorkingDirectory $BGIDir -PassThru
     

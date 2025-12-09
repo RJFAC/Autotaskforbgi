@@ -5,6 +5,7 @@
     V2.12: 
     1. 修正 BetterGI 日誌路徑為 "C:\Program Files\BetterGI\log"。
     2. 新增 Global Trap 與 Read-Host，確保程式發生錯誤時不會閃退，讓使用者能閱讀紅字。
+    3. [Fix] 修正視窗開啟順序，確保 explorer 先執行。
 #>
 
 $SnapshotVersion = "V2.12"
@@ -163,6 +164,9 @@ try {
 Remove-Item -Path $TempDir -Recurse -Force
 Write-Host "`r`n[完成] 快照已儲存至: $ZipPath" -ForegroundColor Green
 
-# 這裡加入 Read-Host 防止視窗立刻關閉
-Read-Host "作業完成。按 Enter 鍵關閉視窗..."
+# [Fix] 修正順序：先打開檔案總管，再暫停等待
+# 使用 /select 參數可以直接選取該檔案，而不僅僅是打開資料夾
 Start-Process "explorer.exe" -ArgumentList "/select,`"$ZipPath`""
+
+# 這裡加入 Read-Host 防止視窗立刻關閉，讓使用者有時間看到綠色成功訊息
+Read-Host "作業完成。按 Enter 鍵關閉視窗..."
