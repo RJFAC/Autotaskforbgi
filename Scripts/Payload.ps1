@@ -1,9 +1,9 @@
 # ==============================================================================
-# AutoTask Payload Script V5.39 (OneDragon Mode Force)
+# AutoTask Payload Script V5.40 (Status Update Fix)
 # ------------------------------------------------------------------------------
+# V5.40: 新增啟動時更新 TaskStatus.json 為 "Running" 的邏輯，修復 Dashboard 卡在 Preparing 的問題。
 # V5.39: 強制將所有任務視為「一條龍配置組」，使用 --startOneDragon 參數啟動。
 # V5.38: 修正 BetterGI 日誌路徑為 "C:\Program Files\BetterGI\log\"。
-# V5.37: Install Path Fix.
 # ==============================================================================
 
 # 1. 初始化與環境設定
@@ -14,6 +14,7 @@ $LogFile = "$LogDir\Payload_$DateStr.log"
 $FlagDir = "$WorkDir\Flags"
 $DoneFlag = "$FlagDir\Done.flag"
 $WeeklyConfFile = "$WorkDir\Configs\WeeklyConfig.json"
+$TaskStatusFile = "$WorkDir\Configs\TaskStatus.json" # [V5.40] 新增狀態檔路徑
 
 # 確保日誌目錄存在
 if (!(Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
@@ -33,11 +34,37 @@ function Write-Log {
 trap {
     Write-Log "CRASH: $($_.Exception.Message)" "ERROR"
     Write-Log "StackTrace: $($_.ScriptStackTrace)" "ERROR"
+    # [V5.40] 發生崩潰時嘗試更新狀態為 Failed
+    try {
+        if (Test-Path $TaskStatusFile) {
+            $Json = Get-Content $TaskStatusFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($Json.Date -eq $DateStr) {
+                $Json.Status = "Failed"
+                $Json | ConvertTo-Json -Depth 5 | Set-Content $TaskStatusFile -Encoding UTF8
+            }
+        }
+    } catch {}
     exit 1
 }
 
 # 2. 啟動與跨日檢查 (Smart Wait)
-Write-Log ">>> Payload 啟動 (V5.39 - OneDragon Mode)..."
+Write-Log ">>> Payload 啟動 (V5.40 - Status Fix)..."
+
+# [V5.40] 啟動時立即更新狀態為 Running
+if (Test-Path $TaskStatusFile) {
+    try {
+        $Json = Get-Content $TaskStatusFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        # 只有當日期匹配且狀態是 Preparing 時才接手更新
+        if ($Json.Date -eq $DateStr) {
+            $Json.Status = "Running"
+            $Json.LastUpdate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+            $Json | ConvertTo-Json -Depth 5 | Set-Content $TaskStatusFile -Encoding UTF8
+            Write-Log "狀態同步: TaskStatus 已更新為 'Running'"
+        }
+    } catch {
+        Write-Log "更新 TaskStatus 失敗: $_" "WARN"
+    }
+}
 
 $Now = Get-Date
 if ($Now.Hour -eq 3 -and $Now.Minute -ge 50) {
@@ -227,4 +254,17 @@ for ($i = 0; $i -lt $TaskList.Count; $i++) {
 Write-Log "Payload 執行結束，登出..."
 New-Item -ItemType File -Path $DoneFlag -Force | Out-Null
 Set-Content -Path "$WorkDir\Configs\LastRun.log" -Value $TodayKey
+
+# [V5.40] 任務完成時更新狀態為 Success
+if (Test-Path $TaskStatusFile) {
+    try {
+        $Json = Get-Content $TaskStatusFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($Json.Date -eq $DateStr) {
+            $Json.Status = "Success"
+            $Json.LastUpdate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+            $Json | ConvertTo-Json -Depth 5 | Set-Content $TaskStatusFile -Encoding UTF8
+        }
+    } catch {}
+}
+
 shutdown.exe /l /f

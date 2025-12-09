@@ -1,5 +1,8 @@
 ﻿# =============================================================================
-# AutoTask Master V5.14 - 登出機制強化與診斷版 (含 Discord 通知)
+# AutoTask Master V5.15 - Fix Discord Notification Call
+# =============================================================================
+# V5.15: 修正手動觸發時 Discord 通知函數名稱錯誤 (Send-DiscordWebhook -> Send-DiscordNotification)。
+# V5.14: 登出機制強化與診斷版 (含 Discord 通知)。
 # =============================================================================
 
 # --- [0. 權限自我檢查] ---
@@ -72,7 +75,7 @@ function Check-Network {
     Write-Log "⚠️ 網路連線逾時。" "Red"; return $false
 }
 
-Write-Log ">>> Master 啟動 (Admin Mode - V5.13 + Discord)..." "Cyan"
+Write-Log ">>> Master 啟動 (Admin Mode - V5.15 + Discord Fix)..." "Cyan"
 
 # =============================================================================
 # [核心邏輯] 判斷是「全新啟動」還是「接手續跑」
@@ -116,10 +119,9 @@ if (-not $IsResume) {
             $ResetStatus = @{ Date=(Get-Date).AddHours(-4).ToString("yyyyMMdd"); Status="Preparing"; RetryCount=0; LastUpdate=(Get-Date).ToString("yyyy-MM-dd HH:mm:ss") }
             $ResetStatus | ConvertTo-Json | Set-Content $TaskStatus -Encoding UTF8
             
-            # [新增] 發送狀態變更通知 (Preparing)
-            if (Get-Command Send-DiscordWebhook -ErrorAction SilentlyContinue) {
-                $WebhookUrl = Get-EnvConfig -Key "DiscordWebhook"
-                Send-DiscordWebhook -WebhookUrl $WebhookUrl -Title "⚙️ 系統準備中" -Description "Master 已啟動，正在重置環境並準備執行任務 (Status: Preparing)。" -Color "3447003" 
+            # [V5.15 Fix] 修正函數名稱為 Send-DiscordNotification，並移除不存在的 Get-EnvConfig
+            if (Get-Command Send-DiscordNotification -ErrorAction SilentlyContinue) {
+                Send-DiscordNotification -Title "⚙️ 系統準備中" -Message "Master 已啟動，正在重置環境並準備執行任務 (Status: Preparing)。" -Color "Blue"
             }
         } catch {}
 
