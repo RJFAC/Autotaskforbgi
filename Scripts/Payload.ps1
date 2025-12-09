@@ -1,9 +1,8 @@
 # ==============================================================================
-# AutoTask Payload Script V5.35 (Day 8 Default Injection)
+# AutoTask Payload Script V5.38 (Fix Log Path)
 # ------------------------------------------------------------------------------
-# V5.35: 針對 Day 8 (週三)，若無 DateConfig 覆蓋 (即 TaskName="Default")，
-#        自動從 WeeklyConfig 注入 [Task1, [WAIT], Task2] 的完整流程。
-# V5.34: 支援 [WAIT] 標記。
+# V5.38: 修正 BetterGI 日誌路徑為 "C:\Program Files\BetterGI\log\"。
+# V5.37: Install Path Fix.
 # ==============================================================================
 
 # 1. 初始化與環境設定
@@ -37,7 +36,7 @@ trap {
 }
 
 # 2. 啟動與跨日檢查 (Smart Wait)
-Write-Log ">>> Payload 啟動 (V5.35 - Day 8 Inject)..."
+Write-Log ">>> Payload 啟動 (V5.38 - Log Path Fix)..."
 
 $Now = Get-Date
 if ($Now.Hour -eq 3 -and $Now.Minute -ge 50) {
@@ -87,7 +86,7 @@ $CycleOffset = ($Now - $RefDate).TotalDays % 42
 if ($CycleOffset -lt 0) { $CycleOffset += 42 }
 $IsTurbulenceDay1 = ($CycleOffset -ge 7.0 -and $CycleOffset -lt 8.0)
 
-# [V5.35] 若為 Day 8 且無覆蓋設定 (RawTaskString == "Default")，自動注入雙重排程
+# Day 8 預設注入
 if ($IsTurbulenceDay1 -and $RawTaskString -eq "Default") {
     Write-Log "📅 偵測到 Day 8 且無覆蓋設定，嘗試從 WeeklyConfig 注入預設雙重排程..." "MAGENTA"
     
@@ -102,7 +101,6 @@ if ($IsTurbulenceDay1 -and $RawTaskString -eq "Default") {
         } catch { Write-Log "讀取 WeeklyConfig 失敗: $_" "ERROR" }
     }
     
-    # 建構注入字串
     $RawTaskString = "$WkDef,[WAIT],$WkTurb"
     Write-Log "-> 已注入任務序列: $RawTaskString" "CYAN"
 }
@@ -117,8 +115,36 @@ if ($RawTaskString -match ",") {
 Write-Log "最終執行清單: $($TaskList -join ' -> ')"
 
 # 3. 準備 BetterGI 執行環境
-$BetterGIPath = "C:\AutoTask\BetterGI\BetterGI.exe" 
-$BetterGILogPath = "$WorkDir\Logs\BetterGI\BetterGI.log"
+$BetterGIPath = "C:\Program Files\BetterGI\BetterGI.exe"
+
+# 路徑驗證
+if (-not (Test-Path $BetterGIPath)) {
+    Write-Log "❌ 致命錯誤: 找不到 BetterGI 執行檔！路徑: $BetterGIPath" "ERROR"
+    exit 1
+}
+
+$BGIDir = Split-Path $BetterGIPath -Parent
+if (-not (Test-Path $BGIDir)) {
+    Write-Log "❌ 致命錯誤: WorkingDirectory 不存在: $BGIDir" "ERROR"
+    exit 1
+}
+
+# [V5.38 Fix] 修正日誌路徑為 "log" (小寫)
+$BGILogsDir = Join-Path $BGIDir "log"
+$BetterGILogPath = "" 
+if (Test-Path $BGILogsDir) {
+    # 嘗試抓取最新的 better-genshin-impact*.log (根據 BGI 命名慣例)
+    $LatestLog = Get-ChildItem $BGILogsDir -Filter "*.log" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($LatestLog) {
+        $BetterGILogPath = $LatestLog.FullName
+        Write-Log "鎖定最新 BGI 日誌: $($LatestLog.Name)"
+    } else {
+         Write-Log "⚠️ 在 $BGILogsDir 中找不到任何 .log 檔案。" "WARN"
+    }
+} else {
+    Write-Log "⚠️ 找不到 BGI log 目錄: $BGILogsDir" "WARN"
+}
+
 Stop-Process -Name "BetterGI", "YuanShen", "GenshinImpact" -Force -ErrorAction SilentlyContinue
 
 # --- 分割點與等待邏輯 ---
@@ -127,7 +153,6 @@ for ($k = 0; $k -lt $TaskList.Count; $k++) {
     if ($TaskList[$k] -eq "[WAIT]") { $ExplicitWaitIndex = $k; break }
 }
 
-# 自動推斷分割點 (Fallback)
 $SplitIndex = -1 
 if ($IsTurbulenceDay1 -and $ExplicitWaitIndex -lt 0) {
     if ($TaskList.Count -gt 2) { $SplitIndex = 3 } else { $SplitIndex = 1 }
@@ -140,7 +165,6 @@ if ($IsTurbulenceDay1 -and $ExplicitWaitIndex -lt 0) {
 for ($i = 0; $i -lt $TaskList.Count; $i++) {
     $CurrentTask = $TaskList[$i]
     
-    # 檢查是否需要等待
     $NeedWait = $false
     if ($IsTurbulenceDay1) {
         if ($ExplicitWaitIndex -ge 0) {
@@ -164,13 +188,12 @@ for ($i = 0; $i -lt $TaskList.Count; $i++) {
         Write-Log "`n>>> 時間已達 10:00+，繼續執行。" "GREEN"
     }
 
-    # 跳過標記本身
     if ($CurrentTask -eq "[WAIT]") { continue }
 
-    # 執行 BetterGI
     Write-Log "啟動 BetterGI [$($i+1)/$($TaskList.Count)]: $CurrentTask"
     $ArgsList = "-start -task `"$CurrentTask`""
-    $Process = Start-Process -FilePath $BetterGIPath -ArgumentList $ArgsList -WorkingDirectory (Split-Path $BetterGIPath) -PassThru
+    
+    $Process = Start-Process -FilePath $BetterGIPath -ArgumentList $ArgsList -WorkingDirectory $BGIDir -PassThru
     
     # 監控
     $TimeoutMinutes = 180
@@ -178,7 +201,6 @@ for ($i = 0; $i -lt $TaskList.Count; $i++) {
     while ($true) {
         if ($Process.HasExited) { Write-Log "任務完成。"; break }
         
-        # 03:50 ForceEnd 檢查
         $CheckTime = Get-Date
         if ($CheckTime.Hour -eq 3 -and $CheckTime.Minute -ge 50) {
              Stop-Process -Id $Process.Id -Force
