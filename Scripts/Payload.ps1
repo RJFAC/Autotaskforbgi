@@ -1,10 +1,10 @@
 # ==============================================================================
-# AutoTask Payload Script V5.41 (Log Liveness Monitor)
+# AutoTask Payload Script V5.42 (Idempotency Check)
 # ------------------------------------------------------------------------------
-# V5.41: 移除 180 分鐘固定超時，改用「日誌靜止檢測」(15分鐘) 作為卡死判定標準。
-#        每次任務啟動後自動重新鎖定最新日誌。
-# V5.40: 新增啟動時更新 TaskStatus.json 為 "Running" 的邏輯。
-# V5.39: 強制使用 --startOneDragon 參數。
+# V5.42: 新增重複執行防護檢查 (Idempotency Check)。
+#        啟動時優先檢查 LastRun.log，若今日已完成且無 ForceRun，則直接退出。
+#        修復了使用者登入 Remote 檢查狀態時會導致任務重跑的邏輯漏洞。
+# V5.41: Log Liveness Monitor.
 # ==============================================================================
 
 # 1. 初始化與環境設定
@@ -16,6 +16,8 @@ $FlagDir = "$WorkDir\Flags"
 $DoneFlag = "$FlagDir\Done.flag"
 $WeeklyConfFile = "$WorkDir\Configs\WeeklyConfig.json"
 $TaskStatusFile = "$WorkDir\Configs\TaskStatus.json"
+$LastRunFile = "$WorkDir\Configs\LastRun.log"
+$ForceRunFlag = "$FlagDir\ForceRun.flag"
 
 # 確保日誌目錄存在
 if (!(Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
@@ -47,8 +49,36 @@ trap {
     exit 1
 }
 
-# 2. 啟動與跨日檢查 (Smart Wait)
-Write-Log ">>> Payload 啟動 (V5.41 - Log Liveness Monitor)..."
+# 2. 啟動檢查 (Pre-flight Checks)
+Write-Log ">>> Payload 啟動 (V5.42 - Idempotency Check)..."
+
+# 計算今日 Key (04:00 界線)
+$Now = Get-Date
+if ($Now.Hour -lt 4) { $TodayKey = $Now.AddDays(-1).ToString("yyyyMMdd") } else { $TodayKey = $Now.ToString("yyyyMMdd") }
+
+# [V5.42] 重複執行防護：檢查 LastRun.log
+if (Test-Path $LastRunFile) {
+    try {
+        $LastRunDate = (Get-Content $LastRunFile -Raw).Trim()
+        $IsForceRun = Test-Path $ForceRunFlag
+        
+        if ($LastRunDate -eq $TodayKey) {
+            if ($IsForceRun) {
+                Write-Log "⚠️ 檢測到今日任務已完成 ($LastRunDate)，但存在 ForceRun 標記，強制重跑。" "YELLOW"
+                # 移除 ForceRun 防止下次誤判
+                Remove-Item $ForceRunFlag -Force -ErrorAction SilentlyContinue
+            } else {
+                Write-Log "✅ 今日任務已標記為完成 ($TodayKey)。" "GREEN"
+                Write-Log "   觸發原因推測: 使用者登入檢查或排程重複觸發。" "GRAY"
+                Write-Log "   Payload 將自動退出 (Idempotency Guard)。" "GRAY"
+                Start-Sleep 3
+                exit 0
+            }
+        }
+    } catch {
+        Write-Log "讀取 LastRun.log 發生錯誤，將繼續執行: $_" "WARN"
+    }
+}
 
 # 狀態同步：立即更新為 Running
 if (Test-Path $TaskStatusFile) {
@@ -63,7 +93,7 @@ if (Test-Path $TaskStatusFile) {
     } catch { Write-Log "更新 TaskStatus 失敗: $_" "WARN" }
 }
 
-$Now = Get-Date
+# 03:50 等待邏輯
 if ($Now.Hour -eq 3 -and $Now.Minute -ge 50) {
     Write-Log "⚠️ 偵測到於重置緩衝期 (03:50~04:00) 啟動，進入等待模式..." "WARNING"
     while ($true) {
@@ -75,7 +105,9 @@ if ($Now.Hour -eq 3 -and $Now.Minute -ge 50) {
         }
         Start-Sleep 10
     }
+    # 重新計算時間與 Key
     $Now = Get-Date
+    if ($Now.Hour -lt 4) { $TodayKey = $Now.AddDays(-1).ToString("yyyyMMdd") } else { $TodayKey = $Now.ToString("yyyyMMdd") }
 }
 
 # 讀取 Configs
@@ -91,7 +123,6 @@ if (Test-Path $EnvConfigFile) {
 # --- 讀取 DateConfig.map ---
 $MapFile = "$WorkDir\Configs\DateConfig.map"
 $RawTaskString = "Default"
-if ($Now.Hour -lt 4) { $TodayKey = $Now.AddDays(-1).ToString("yyyyMMdd") } else { $TodayKey = $Now.ToString("yyyyMMdd") }
 Write-Log "計算日期 Key: $TodayKey"
 
 if (Test-Path $MapFile) {
@@ -229,7 +260,7 @@ for ($i = 0; $i -lt $TaskList.Count; $i++) {
 # 4. 結算
 Write-Log "Payload 執行結束，登出..."
 New-Item -ItemType File -Path $DoneFlag -Force | Out-Null
-Set-Content -Path "$WorkDir\Configs\LastRun.log" -Value $TodayKey
+Set-Content -Path $LastRunFile -Value $TodayKey
 
 # 更新狀態為 Success
 if (Test-Path $TaskStatusFile) {
