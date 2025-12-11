@@ -1,9 +1,10 @@
 # ==============================================================================
-# AutoTask Payload Script V5.42 (Idempotency Check)
+# AutoTask Payload Script V5.43 (Logic Fix)
 # ------------------------------------------------------------------------------
-# V5.42: 新增重複執行防護檢查 (Idempotency Check)。
-#        啟動時優先檢查 LastRun.log，若今日已完成且無 ForceRun，則直接退出。
-#        修復了使用者登入 Remote 檢查狀態時會導致任務重跑的邏輯漏洞。
+# V5.43: 修復 WeeklyConfig 讀取邏輯。
+#        解決 V5.42 僅針對 Day 8 處理，導致一般日期無法解析 "Default" 而回退錯誤的問題。
+#        現在會完整判斷「紊亂期」與「一般期」並正確讀取週配置。
+# V5.42: Idempotency Check (重複執行防護)。
 # V5.41: Log Liveness Monitor.
 # ==============================================================================
 
@@ -50,7 +51,7 @@ trap {
 }
 
 # 2. 啟動檢查 (Pre-flight Checks)
-Write-Log ">>> Payload 啟動 (V5.42 - Idempotency Check)..."
+Write-Log ">>> Payload 啟動 (V5.43 - Logic Fix)..."
 
 # 計算今日 Key (04:00 界線)
 $Now = Get-Date
@@ -120,7 +121,7 @@ if (Test-Path $EnvConfigFile) {
     $GenshinPath = "C:\Program Files\HoYoPlay\games\Genshin Impact Game"
 }
 
-# --- 讀取 DateConfig.map ---
+# --- 讀取 DateConfig.map (優先順序 1) ---
 $MapFile = "$WorkDir\Configs\DateConfig.map"
 $RawTaskString = "Default"
 Write-Log "計算日期 Key: $TodayKey"
@@ -130,29 +131,57 @@ if (Test-Path $MapFile) {
     foreach ($Line in $MapContent) {
         if ($Line -match "^$TodayKey=(.*)") {
             $RawTaskString = $Matches[1].Trim()
+            Write-Log "📅 命中 DateConfig.map 指定配置: $RawTaskString" "CYAN"
             break
         }
     }
 }
 
-# --- Day 8 偵測與預設注入邏輯 ---
+# --- 讀取 WeeklyConfig.json (優先順序 2) ---
+# [Fix V5.43] 補完 Day 8 以外日期的讀取邏輯
 $RefDate = [datetime]"2024-08-28T00:00:00"
 $CycleOffset = ($Now - $RefDate).TotalDays % 42
 if ($CycleOffset -lt 0) { $CycleOffset += 42 }
 $IsTurbulenceDay1 = ($CycleOffset -ge 7.0 -and $CycleOffset -lt 8.0)
 
-if ($IsTurbulenceDay1 -and $RawTaskString -eq "Default") {
-    Write-Log "📅 偵測到 Day 8 且無覆蓋設定，嘗試從 WeeklyConfig 注入預設雙重排程..." "MAGENTA"
-    $WkDef = "模板-Copy"; $WkTurb = "模板-Copy"
+if ($RawTaskString -eq "Default") {
     if (Test-Path $WeeklyConfFile) {
         try {
             $WkJson = Get-Content $WeeklyConfFile -Raw | ConvertFrom-Json
-            if ($WkJson.Wednesday) { $WkDef = $WkJson.Wednesday }
-            if ($WkJson.Turbulence -and $WkJson.Turbulence.Wednesday) { $WkTurb = $WkJson.Turbulence.Wednesday }
+            $WeekKey = $Now.DayOfWeek.ToString() # e.g., "Thursday"
+            
+            # 定義紊亂期範圍 (Day 8 ~ Day 18)
+            # Day 8 starts at offset 7.x
+            # Day 18 ends at offset 17.x (Saturday 03:59)
+            $IsTurbulencePeriod = ($CycleOffset -ge 7.0 -and $CycleOffset -lt 17.2)
+            
+            if ($IsTurbulenceDay1) {
+                # Day 8 (週三) 特殊處理：注入 [WAIT]
+                $WkDef = if ($WkJson.$WeekKey) { $WkJson.$WeekKey } else { "Default" }
+                $WkTurb = if ($WkJson.Turbulence -and $WkJson.Turbulence.$WeekKey) { $WkJson.Turbulence.$WeekKey } else { "Default" }
+                $RawTaskString = "$WkDef,[WAIT],$WkTurb"
+                Write-Log "📅 偵測到 Day 8，注入雙重排程: $RawTaskString" "MAGENTA"
+            } elseif ($IsTurbulencePeriod) {
+                # 紊亂期其他天 (Day 9 - 17)
+                if ($WkJson.Turbulence -and $WkJson.Turbulence.$WeekKey) {
+                    $RawTaskString = $WkJson.Turbulence.$WeekKey
+                    Write-Log "🔥 偵測到紊亂期 ($WeekKey)，使用紊亂配置: $RawTaskString" "MAGENTA"
+                } else {
+                    # 若無紊亂配置，回退到一般配置
+                    if ($WkJson.$WeekKey) { 
+                        $RawTaskString = $WkJson.$WeekKey 
+                        Write-Log "🔥 紊亂期 ($WeekKey) 但無專屬配置，使用一般配置: $RawTaskString"
+                    }
+                }
+            } else {
+                # 一般期間 (非紊亂期)
+                if ($WkJson.$WeekKey) {
+                    $RawTaskString = $WkJson.$WeekKey
+                    Write-Log "📅 使用一般每週配置 ($WeekKey): $RawTaskString"
+                }
+            }
         } catch { Write-Log "讀取 WeeklyConfig 失敗: $_" "ERROR" }
     }
-    $RawTaskString = "$WkDef,[WAIT],$WkTurb"
-    Write-Log "-> 已注入任務序列: $RawTaskString" "CYAN"
 }
 
 # 解析任務清單

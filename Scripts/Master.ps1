@@ -1,8 +1,8 @@
 ﻿# =============================================================================
-# AutoTask Master V5.15 - Fix Discord Notification Call
+# AutoTask Master V5.16 - Time Window Shift
 # =============================================================================
-# V5.15: 修正手動觸發時 Discord 通知函數名稱錯誤 (Send-DiscordWebhook -> Send-DiscordNotification)。
-# V5.14: 登出機制強化與診斷版 (含 Discord 通知)。
+# V5.16: 同步更新 LastRun 檢查豁免區間為 03:45 ~ 04:05，配合 Payload 新邏輯。
+# V5.15: Fix Discord Notification Call.
 # =============================================================================
 
 # --- [0. 權限自我檢查] ---
@@ -75,7 +75,7 @@ function Check-Network {
     Write-Log "⚠️ 網路連線逾時。" "Red"; return $false
 }
 
-Write-Log ">>> Master 啟動 (Admin Mode - V5.15 + Discord Fix)..." "Cyan"
+Write-Log ">>> Master 啟動 (Admin Mode - V5.16 + Time Shift)..." "Cyan"
 
 # =============================================================================
 # [核心邏輯] 判斷是「全新啟動」還是「接手續跑」
@@ -100,17 +100,23 @@ if (-not $IsResume) {
             if ((Get-Content $PauseLog) -contains $CheckDateStr) { Write-Log "今日暫停 ($CheckDateStr)。" "Yellow"; exit }
         }
         
-        # 時間窗檢查 (03:35 ~ 04:25)
+        # 時間窗檢查 (03:35 ~ 04:25) -> 此區間與 ForceEnd 03:45 相容
         $Target = (Get-Date).Date.AddHours(3).AddMinutes(55)
         if ($Now -lt $Target.AddMinutes(-20) -or $Now -gt $Target.AddMinutes(30)) {
             if (-not (Test-Path $RunFlag)) { Write-Log "非任務時間，退出。" "Gray"; exit }
         }
         
-        # 03:50~03:59 跳過 LastRun 檢查 (由 Payload 處理)
-        if ($Now.Hour -ne 3 -or $Now.Minute -lt 50) {
+        # [V5.16 Fix] 修正 LastRun 檢查豁免區間
+        # 若時間在 03:45 ~ 04:05 之間，跳過 LastRun 檢查 (允許 Payload 啟動並等待)
+        # 條件: (Hour=3 && Min>=45) OR (Hour=4 && Min<5)
+        $InResetBuffer = ($Now.Hour -eq 3 -and $Now.Minute -ge 45) -or ($Now.Hour -eq 4 -and $Now.Minute -lt 5)
+        
+        if (-not $InResetBuffer) {
              if (Test-Path $LastRunLog) {
                 if ((Get-Content $LastRunLog) -eq $CheckDateStr) { Write-Log "今日任務已完成。" "Green"; exit }
              }
+        } else {
+             Write-Log "處於換日緩衝期 (03:45~04:05)，跳過 LastRun 檢查，交由 Payload 處理等待。" "Yellow"
         }
 
     } else {
@@ -119,7 +125,6 @@ if (-not $IsResume) {
             $ResetStatus = @{ Date=(Get-Date).AddHours(-4).ToString("yyyyMMdd"); Status="Preparing"; RetryCount=0; LastUpdate=(Get-Date).ToString("yyyy-MM-dd HH:mm:ss") }
             $ResetStatus | ConvertTo-Json | Set-Content $TaskStatus -Encoding UTF8
             
-            # [V5.15 Fix] 修正函數名稱為 Send-DiscordNotification，並移除不存在的 Get-EnvConfig
             if (Get-Command Send-DiscordNotification -ErrorAction SilentlyContinue) {
                 Send-DiscordNotification -Title "⚙️ 系統準備中" -Message "Master 已啟動，正在重置環境並準備執行任務 (Status: Preparing)。" -Color "Blue"
             }
@@ -184,7 +189,6 @@ while ($true) {
 
     if (Test-Path $DoneFlag) { 
         Write-Log "任務成功 (Done)！" "Green"
-        # [Discord] 任務成功通知
         if (Get-Command Send-AutoTaskReport -ErrorAction SilentlyContinue) {
             Send-AutoTaskReport -Status "Success" -LogFile $LogFile
         }
@@ -192,7 +196,6 @@ while ($true) {
     }
     if (Test-Path $FailFlag) { 
         Write-Log "任務失敗 (Fail)！" "Red"
-        # [Discord] 任務失敗通知
         if (Get-Command Send-AutoTaskReport -ErrorAction SilentlyContinue) {
             Send-AutoTaskReport -Status "Error" -LogFile $LogFile
         }
@@ -241,7 +244,6 @@ while ($true) {
         }
     } else {
         if (-not $PayloadLaunched) {
-             # [新增] 記錄 PID 以供後續診斷
              Write-Log "偵測到 Payload 運作中 (PID: $($PayloadProc.ProcessId))" "Cyan"
         }
         $PayloadLaunched = $true; $SupervisorStart = Get-Date 
