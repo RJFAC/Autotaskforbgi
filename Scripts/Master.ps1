@@ -1,8 +1,9 @@
 ﻿# =============================================================================
-# AutoTask Master V5.16 - Time Window Shift
+# AutoTask Master V5.17 - Notification & Status Fix
 # =============================================================================
-# V5.16: 同步更新 LastRun 檢查豁免區間為 03:45 ~ 04:05，配合 Payload 新邏輯。
-# V5.15: Fix Discord Notification Call.
+# V5.17: 
+#   1. 強制所有啟動（含排程）皆發送 Discord 通知。
+#   2. 強制所有啟動皆重置 TaskStatus 為 "Preparing"，修復 Dashboard 顯示滯後問題。
 # =============================================================================
 
 # --- [0. 權限自我檢查] ---
@@ -22,7 +23,7 @@ $LogDir     = "$BaseDir\Logs"
 $LogFileName = "Master_$(Get-Date -Format 'yyyyMMdd').log"
 $LogFile     = Join-Path $LogDir $LogFileName
 
-# 載入 Discord 模組 (新增)
+# 載入 Discord 模組
 if (Test-Path "$ScriptDir\Lib_Discord.ps1") { . "$ScriptDir\Lib_Discord.ps1" }
 
 if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -ItemType Directory -Force | Out-Null }
@@ -75,7 +76,7 @@ function Check-Network {
     Write-Log "⚠️ 網路連線逾時。" "Red"; return $false
 }
 
-Write-Log ">>> Master 啟動 (Admin Mode - V5.16 + Time Shift)..." "Cyan"
+Write-Log ">>> Master 啟動 (Admin Mode - V5.17 + Notify Fix)..." "Cyan"
 
 # =============================================================================
 # [核心邏輯] 判斷是「全新啟動」還是「接手續跑」
@@ -91,58 +92,78 @@ if (Test-Path $RunFlag) {
 
 if (-not $IsResume) {
     # --- [全新啟動流程] ---
-    if (-not (Test-Path $ManualFlag)) {
+    
+    # [Fix] 無論是手動還是排程，只要是新啟動，都重置狀態並通知
+    # 這樣 Dashboard 就能立刻顯示 "Preparing"，使用者也會收到 Discord 通知
+    try {
+        $ResetStatus = @{ 
+            Date = (Get-Date).AddHours(-4).ToString("yyyyMMdd");
+            Status = "Preparing"; 
+            RetryCount = 0; 
+            LastUpdate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss") 
+        }
+        $ResetStatus | ConvertTo-Json | Set-Content $TaskStatus -Encoding UTF8 -Force
         
+        $StartType = if (Test-Path $ManualFlag) { "手動觸發 (Manual)" } else { "排程啟動 (Scheduled)" }
+        
+        # 發送啟動通知
+        if (Get-Command Send-DiscordNotification -ErrorAction SilentlyContinue) {
+            Send-DiscordNotification -Title "⚙️ Master 系統啟動" -Message "類型: $StartType`n狀態: 正在初始化環境並準備執行任務..." -Color "Blue"
+        }
+    } catch {
+        Write-Log "狀態重置或通知發送失敗: $_" "Red"
+    }
+
+    if (-not (Test-Path $ManualFlag)) {
         $Now = Get-Date
         $CheckDateStr = $Now.AddHours(-4).ToString("yyyyMMdd")
         
         if (Test-Path $PauseLog) {
-            if ((Get-Content $PauseLog) -contains $CheckDateStr) { Write-Log "今日暫停 ($CheckDateStr)。" "Yellow"; exit }
+            if ((Get-Content $PauseLog) -contains $CheckDateStr) { 
+                Write-Log "今日暫停 ($CheckDateStr)。" "Yellow"
+                Send-DiscordNotification -Title "⏸️ 今日暫停" -Message "檢測到暫停設定，Master 將停止執行。" -Color "Orange"
+                exit 
+            }
         }
         
-        # 時間窗檢查 (03:35 ~ 04:25) -> 此區間與 ForceEnd 03:45 相容
+        # 時間窗檢查 (03:35 ~ 04:25)
         $Target = (Get-Date).Date.AddHours(3).AddMinutes(55)
         if ($Now -lt $Target.AddMinutes(-20) -or $Now -gt $Target.AddMinutes(30)) {
             if (-not (Test-Path $RunFlag)) { Write-Log "非任務時間，退出。" "Gray"; exit }
         }
         
-        # [V5.16 Fix] 修正 LastRun 檢查豁免區間
-        # 若時間在 03:45 ~ 04:05 之間，跳過 LastRun 檢查 (允許 Payload 啟動並等待)
-        # 條件: (Hour=3 && Min>=45) OR (Hour=4 && Min<5)
+        # LastRun 檢查 (含緩衝區間)
         $InResetBuffer = ($Now.Hour -eq 3 -and $Now.Minute -ge 45) -or ($Now.Hour -eq 4 -and $Now.Minute -lt 5)
-        
         if (-not $InResetBuffer) {
              if (Test-Path $LastRunLog) {
-                if ((Get-Content $LastRunLog) -eq $CheckDateStr) { Write-Log "今日任務已完成。" "Green"; exit }
+                if ((Get-Content $LastRunLog) -eq $CheckDateStr) { 
+                    Write-Log "今日任務已完成。" "Green"; 
+                    # 避免重複通知，這裡可選擇不發或發送簡單提示
+                    exit 
+                }
              }
         } else {
-             Write-Log "處於換日緩衝期 (03:45~04:05)，跳過 LastRun 檢查，交由 Payload 處理等待。" "Yellow"
+             Write-Log "處於換日緩衝期 (03:45~04:05)，跳過 LastRun 檢查。" "Yellow"
         }
 
     } else {
         Write-Log "手動觸發，執行淨化..." "Magenta"
-        try {
-            $ResetStatus = @{ Date=(Get-Date).AddHours(-4).ToString("yyyyMMdd"); Status="Preparing"; RetryCount=0; LastUpdate=(Get-Date).ToString("yyyy-MM-dd HH:mm:ss") }
-            $ResetStatus | ConvertTo-Json | Set-Content $TaskStatus -Encoding UTF8
-            
-            if (Get-Command Send-DiscordNotification -ErrorAction SilentlyContinue) {
-                Send-DiscordNotification -Title "⚙️ 系統準備中" -Message "Master 已啟動，正在重置環境並準備執行任務 (Status: Preparing)。" -Color "Blue"
-            }
-        } catch {}
-
+        # 手動觸發的清理邏輯
         Stop-Process -Name "1Remote" -Force -ErrorAction SilentlyContinue
         $MyPID = $PID
         try {
-            Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { ($_.CommandLine -like "*Monitor.ps1*" -or $_.CommandLine -like "*Master.ps1*") -and $_.ProcessId -ne $MyPID } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+            Where-Object { ($_.CommandLine -like "*Monitor.ps1*" -or $_.CommandLine -like "*Master.ps1*") -and $_.ProcessId -ne $MyPID } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
         } catch {}
         
+        # 強制登出 Remote
         $SessionOutput = qwinsta 2>$null | Select-String "\bRemote\b"
         if ($SessionOutput) {
             $Line = $SessionOutput.ToString().Trim() -replace "\s+", " "; $Parts = $Line.Split(" "); $SessionID = $null; foreach ($part in $Parts) { if ($part -match "^\d+$") { $SessionID = $part; break } }
             if ($SessionID) {
-                Write-Log "強制登出 Remote (ID: $SessionID)..." "Yellow"
                 cmd /c "logoff $SessionID"
-                $Wait=0; while($true){ if(-not(qwinsta 2>$null|Select-String "\bRemote\b")){break}; if($Wait-ge 20){break}; Start-Sleep 1; $Wait++ }
+                Start-Sleep 2
             }
         }
         if (Test-Path $RunFlag) { Remove-Item $RunFlag -Force }
@@ -151,6 +172,7 @@ if (-not $IsResume) {
         Write-Log "已建立 ForceRun 標記。" "Cyan"
     }
 
+    # 重置 Flags
     if (Test-Path $RunFlag) { Remove-Item $RunFlag -Force }
     if (Test-Path $DoneFlag) { Remove-Item $DoneFlag -Force }
     if (Test-Path $FailFlag) { Remove-Item $FailFlag -Force }
@@ -165,13 +187,11 @@ if (-not $IsResume) {
     Start-Sleep 2
 }
 
-# 3. 確保 Monitor 運行
+# 確保 Monitor 運行
 $MonitorProc = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*Monitor.ps1*" }
 if (-not $MonitorProc) {
     Write-Log "啟動 Monitor..."
     Start-Process powershell.exe -ArgumentList "-ExecutionPolicy Bypass -File `"$MonitorScript`""
-} else {
-    Write-Log "Monitor 已在運行。"
 }
 
 # --- [Master 監督迴圈] ---
@@ -180,7 +200,6 @@ Write-Log ">>> 進入監督模式" "Green"
 $PayloadLaunched = $false
 if ($IsResume) { $PayloadLaunched = $true }
 
-# 連續重啟計數器
 $RapidRestartCount = 0
 $LastRestartTime = Get-Date
 
@@ -190,7 +209,7 @@ while ($true) {
     if (Test-Path $DoneFlag) { 
         Write-Log "任務成功 (Done)！" "Green"
         if (Get-Command Send-AutoTaskReport -ErrorAction SilentlyContinue) {
-            Send-AutoTaskReport -Status "Success" -LogFile $LogFile
+             Send-AutoTaskReport -Status "Success" -LogFile $LogFile
         }
         break 
     }
@@ -217,6 +236,11 @@ while ($true) {
             $Mem = Get-CimInstance Win32_OperatingSystem | Select-Object @{Name="FreeGB";Expression={$_.FreePhysicalMemory/1MB}}
             Write-Log "⚠️ Payload 消失！(系統剩餘記憶體: $([math]::Round($Mem.FreeGB, 2)) GB)" "Red"
             
+            # 發送異常通知
+            if (Get-Command Send-DiscordNotification -ErrorAction SilentlyContinue) {
+                Send-DiscordNotification -Title "⚠️ Payload 進程異常消失" -Message "正在嘗試救援重啟... (重試次數: $($RapidRestartCount + 1))" -Color "Orange"
+            }
+
             if (($Now - $LastRestartTime).TotalSeconds -lt 60) { $RapidRestartCount++ } else { $RapidRestartCount = 1 }
             $LastRestartTime = $Now
 
@@ -229,15 +253,10 @@ while ($true) {
 
             Write-Log "⚠️ 正在執行救援重啟 (嘗試 $RapidRestartCount)..." "Yellow"
             $LogOutput = schtasks /run /tn "Auto_BetterGI_Payload" 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                 Write-Log "排程啟動指令發送成功。" "Green"
-            } else {
-                 Write-Log "⚠️ 排程啟動失敗！代碼: $LASTEXITCODE, 訊息: $LogOutput" "Red"
-            }
             Start-Sleep 10
         } else {
             if ((Get-Date) -gt $SupervisorStart.AddMinutes(15)) {
-                 Write-Log "Payload 啟動超時 (15分鐘未偵測到進程)，判定 RDP 失效，重試 RDP..." "Yellow"
+                 Write-Log "Payload 啟動超時 (15分鐘)，RDP 重試..." "Yellow"
                  Start-Process -FilePath $1RemoteExe -ArgumentList "-r Remote" -WorkingDirectory $1RemoteDir
                  $SupervisorStart = Get-Date
             }
@@ -250,7 +269,7 @@ while ($true) {
     }
 }
 
-# --- [清理與強制登出邏輯修正] ---
+# --- [清理與結束] ---
 Write-Log "任務結束，清理中..."
 Remove-Item $RunFlag -Force
 Start-Sleep 5
@@ -258,32 +277,19 @@ $MonitorProc = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | W
 if ($MonitorProc) { Stop-Process -Id $MonitorProc.ProcessId -Force }
 
 Write-Log "等待 Remote 登出..."
-$Timeout = 0
-$MaxTimeout = 60 # 60 * 3秒 = 3分鐘
-
+$Timeout = 0; $MaxTimeout = 60
 while ($true) {
     $SessionInfo = qwinsta 2>$null | Select-String "\bRemote\b"
-    if (-not $SessionInfo) {
-        Write-Log "Remote 已登出 (Session 消失)。" "Green"
-        break 
-    }
-
+    if (-not $SessionInfo) { Write-Log "Remote 已登出。" "Green"; break }
     if ($Timeout -ge $MaxTimeout) { 
-        Write-Log "⚠️ 登出逾時 (3分鐘)！正在執行強制驅逐..." "Red"
         try {
-            $Line = $SessionInfo.ToString().Trim() -replace "\s+", " "
-            $Parts = $Line.Split(" "); $SessionID = $null
-            foreach ($part in $Parts) { if ($part -match "^\d+$") { $SessionID = $part; break } }
-            if ($SessionID) {
-                Write-Log "執行: logoff $SessionID" "Yellow"
-                cmd /c "logoff $SessionID"
-            }
-        } catch { Write-Log "強制登出時發生例外: $_" "Red" }
+            $Line = $SessionInfo.ToString().Trim() -replace "\s+", " "; $Parts = $Line.Split(" "); $SessionID = $null; foreach ($part in $Parts) { if ($part -match "^\d+$") { $SessionID = $part; break } }
+            if ($SessionID) { cmd /c "logoff $SessionID" }
+        } catch {}
         break 
     }
     Start-Sleep 3; $Timeout++
 }
-
 Stop-Process -Name "1Remote" -Force -ErrorAction SilentlyContinue
 Remove-Item $DoneFlag -Force
 
@@ -291,6 +297,5 @@ $CurrentDateStr = (Get-Date).AddHours(-4).ToString("yyyyMMdd")
 if (Test-Path $NoShutdownLog) {
     if ((Get-Content $NoShutdownLog) -contains $CurrentDateStr) { Write-Log "今日不關機。" "Cyan"; exit }
 }
-
 if (Test-Path $CountdownScript) { Start-Process powershell.exe -ExecutionPolicy Bypass -File "$CountdownScript" }
 exit
