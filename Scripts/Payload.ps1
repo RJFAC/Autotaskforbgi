@@ -1,10 +1,10 @@
 # ==============================================================================
-# AutoTask Payload Script V5.45 (Full Notification & Robust Status)
+# AutoTask Payload Script V5.47 (Robust JSON & Safe Start)
 # ------------------------------------------------------------------------------
-# V5.45:
-#   1. [Fix] Update-TaskStatus 加入重試與強制日期更新，解決 Dashboard 狀態卡死問題。
-#   2. [Add] 整合 Lib_Discord.ps1，實現全流程狀態通知 (啟動/異常/結束)。
-#   3. [Mod] 優化日誌與錯誤處理流程。
+# V5.47:
+#   1. [Fix] 重寫 Update-TaskStatus，改用 Try-Catch 處理 Add-Member，防止屬性重複錯誤。
+#   2. [Fix] 增加 JSON 檔案損毀檢測與自動修復機制 (防止因空檔或亂碼導致腳本崩潰)。
+#   3. [Mod] 強化啟動流程，即使狀態檔讀取失敗也能繼續執行。
 # ==============================================================================
 
 # 1. 初始化與環境設定
@@ -23,19 +23,26 @@ $ScriptDir = "$WorkDir\Scripts"
 # 確保日誌目錄存在
 if (!(Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
 
-# 載入 Discord 模組
-if (Test-Path "$ScriptDir\Lib_Discord.ps1") { . "$ScriptDir\Lib_Discord.ps1" }
+# 載入 Discord 模組 (如果存在)
+if (Test-Path "$ScriptDir\Lib_Discord.ps1") { 
+    try { . "$ScriptDir\Lib_Discord.ps1" } catch { Write-Host "Discord 模組載入失敗: $_" }
+}
 
 # 日誌函數
 function Write-Log {
     param ([string]$Message, [string]$Level = "INFO")
     $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $LogEntry = "[$Timestamp] [$Level] $Message"
-    Add-Content -Path $LogFile -Value $LogEntry -Encoding UTF8
+    try {
+        Add-Content -Path $LogFile -Value $LogEntry -Encoding UTF8 -ErrorAction Stop
+    } catch {
+        # 如果寫入日誌失敗 (例如檔案被鎖定)，嘗試寫入 Console 避免崩潰
+        Write-Host "Log Error: $Message" -ForegroundColor Red
+    }
     Write-Host $LogEntry
 }
 
-# 狀態更新函數 (增強版：重試 + 強制更新)
+# 狀態更新函數 (V5.47: 強韌性增強版)
 function Update-TaskStatus {
     param ([string]$Status)
     $MaxRetries = 5
@@ -44,21 +51,51 @@ function Update-TaskStatus {
     
     while (-not $Success -and $Retry -lt $MaxRetries) {
         try {
-            if (Test-Path $TaskStatusFile) {
-                # 這裡不再檢查舊日期，直接讀取並覆蓋為今日日期，確保 Dashboard 顯示正確
-                $Json = Get-Content $TaskStatusFile -Raw -Encoding UTF8 | ConvertFrom-Json
-                
-                $Json.Date = $DateStr
-                $Json.Status = $Status
-                $Json.LastUpdate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-                # 保留或重置重試計數
-                if (-not $Json.RetryCount) { $Json | Add-Member -Name "RetryCount" -Value 0 -MemberType NoteProperty }
-                
-                $Json | ConvertTo-Json -Depth 5 | Set-Content $TaskStatusFile -Encoding UTF8 -Force
-                $Success = $true
+            $StatusJson = $null
+            $FileExists = Test-Path $TaskStatusFile
+
+            # 1. 嘗試讀取現有狀態檔
+            if ($FileExists) {
+                try {
+                    $Content = Get-Content $TaskStatusFile -Raw -Encoding UTF8 -ErrorAction Stop
+                    if (-not [string]::IsNullOrWhiteSpace($Content)) {
+                        $StatusJson = $Content | ConvertFrom-Json -ErrorAction Stop
+                    }
+                } catch {
+                    Write-Log "警告: TaskStatus.json 讀取失敗或格式損毀，將重建。錯誤: $_" "WARN"
+                    $StatusJson = $null # 標記為需要重建
+                }
             }
+            
+            # 2. 判斷是新建還是更新
+            if ($null -eq $StatusJson) {
+                # 建立新物件 (檔案不存在或已損毀)
+                $StatusJson = [PSCustomObject]@{
+                    Date = $DateStr
+                    Status = $Status
+                    LastUpdate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                    RetryCount = 0
+                }
+            } else {
+                # 更新現有物件
+                $StatusJson.Date = $DateStr
+                $StatusJson.Status = $Status
+                $StatusJson.LastUpdate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                
+                # [Fix V5.47] 安全添加 RetryCount (使用 Try-Catch 忽略 MemberAlreadyExists)
+                try {
+                    $StatusJson | Add-Member -Name "RetryCount" -Value 0 -MemberType NoteProperty -ErrorAction Stop
+                } catch {
+                    # 忽略 "成員已存在" 錯誤，這是預期行為
+                }
+            }
+
+            # 3. 寫入檔案
+            $StatusJson | ConvertTo-Json -Depth 5 | Set-Content $TaskStatusFile -Encoding UTF8 -Force
+            $Success = $true
+
         } catch {
-            Write-Log "更新 TaskStatus 失敗 ($($Retry+1)/$MaxRetries): $_" "WARN"
+            Write-Log "更新 TaskStatus 寫入失敗 ($($Retry+1)/$MaxRetries): $_" "WARN"
             Start-Sleep -Milliseconds 500
             $Retry++
         }
@@ -72,16 +109,18 @@ function Notify {
     }
 }
 
+# 全域錯誤捕捉
 trap {
     $Err = $_.Exception.Message
     Write-Log "CRASH: $Err" "ERROR"
-    Update-TaskStatus "Failed"
+    # 嘗試更新狀態，但不保證成功，因為可能是在 Update-TaskStatus 內部崩潰
+    try { Update-TaskStatus "Failed" } catch {}
     Notify "❌ Payload 腳本崩潰 (Trap)" "錯誤訊息: $Err`nStackTrace: $($_.ScriptStackTrace)" "Red"
     exit 1
 }
 
 # 2. 啟動檢查 (Pre-flight Checks)
-Write-Log ">>> Payload 啟動 (V5.45)..."
+Write-Log ">>> Payload 啟動 (V5.47)..."
 
 # 計算今日 Key
 $Now = Get-Date
@@ -123,12 +162,16 @@ $MapFile = "$WorkDir\Configs\DateConfig.map"
 $RawTaskString = "Default"
 
 if (Test-Path $MapFile) {
-    $MapContent = Get-Content $MapFile
-    foreach ($Line in $MapContent) {
-        if ($Line -match "^$TodayKey=(.*)") {
-            $RawTaskString = $Matches[1].Trim()
-            break
+    try {
+        $MapContent = Get-Content $MapFile
+        foreach ($Line in $MapContent) {
+            if ($Line -match "^$TodayKey=(.*)") {
+                $RawTaskString = $Matches[1].Trim()
+                break
+            }
         }
+    } catch {
+        Write-Log "讀取 MapFile 失敗，使用預設值: $_" "WARN"
     }
 }
 
