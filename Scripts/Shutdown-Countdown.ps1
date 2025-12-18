@@ -1,19 +1,27 @@
 <#
 .SYNOPSIS
-    自動關機倒數計時器 V3 (通知增強版)
-    - 支援 GUI 視窗倒數 (預設)
-    - 支援背景無頭模式 (Headless Mode)
-    - 整合 Discord 通知、Windows Toast 通知、聲音警報
+    自動關機倒數計時器 V4 (Lib_Discord 整合版)
+    - 改用 Lib_Discord.ps1 發送通知，移除對舊版 Notify.ps1 的依賴。
+    - 支援 GUI 視窗倒數 (預設) 與 Headless 模式。
 #>
 
 $ErrorActionPreference = "Stop"
 
 # --- [設定] ---
-$LogDir       = "C:\AutoTask\Logs"
+$BaseDir      = "C:\AutoTask"
+$LogDir       = "$BaseDir\Logs"
 $LogFile      = Join-Path $LogDir "Shutdown.log"
-$NotifyScript = "C:\AutoTask\Scripts\Notify.ps1"
+$LibDiscord   = "$BaseDir\Scripts\Lib_Discord.ps1"  # 指向新版 Lib
 $CountdownSec = 300 # 5 分鐘
 $SoundInterval= 30  # 背景模式下每 30 秒嗶一聲
+
+# --- [載入 Lib] ---
+if (Test-Path $LibDiscord) {
+    . $LibDiscord
+} else {
+    Write-Warning "找不到 Lib_Discord.ps1，Discord 通知將失效。"
+    function Send-DiscordNotification { param($Message, $Title, $Color) Write-Host "Mock Notify: $Title - $Message" }
+}
 
 # --- [輔助函數] ---
 if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -ItemType Directory | Out-Null }
@@ -26,165 +34,120 @@ function Write-Log {
     if ($Type -eq "ERROR") { Write-Host $Line -ForegroundColor Red } else { Write-Host $Line -ForegroundColor Cyan }
 }
 
-function Send-Discord {
-    param($Title, $Msg, $IsEmergency=$false)
-    if (Test-Path $NotifyScript) {
-        $Color = if ($IsEmergency) { "Red" } else { "Yellow" }
-        # 呼叫 Notify.ps1
-        Start-Process powershell.exe -ArgumentList "-ExecutionPolicy Bypass -File `"$NotifyScript`" -Title `"$Title`" -Message `"$Msg`" -Color `"$Color`" -Mention `$true" -WindowStyle Hidden
-    }
-}
-
 function Send-Toast {
-    param($Title, $Message)
+    param([string]$Title, [string]$Message)
     $code = @"
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using Windows.Data.Xml.Dom;
-using Windows.UI.Notifications;
-
-namespace ToastNotify
-{
-    public class Toaster
-    {
-        public static void Show(string title, string message)
-        {
-            string xml = "<toast><visual><binding template=\"ToastGeneric\"><text>" + title + "</text><text>" + message + "</text></binding></visual><audio src=\"ms-winsoundevent:Notification.Looping.Alarm\" loop=\"false\"/></toast>";
-            XmlDocument doc = new XmlDocument();
-            doc.LoadXml(xml);
-            ToastNotification toast = new ToastNotification(doc);
-            toast.Tag = "AutoTaskShutdown";
-            toast.Group = "AutoTask";
-            ToastNotificationManager.CreateToastNotifier("AutoTask System").Show(toast);
-        }
-    }
-}
+    Windows.Data.Xml.Dom.XmlDocument toastXml = Windows.UI.Notifications.ToastNotificationManager.GetTemplateContent(Windows.UI.Notifications.ToastTemplateType.ToastImageAndText02);
+    Windows.Data.Xml.Dom.XmlNodeList stringElements = toastXml.GetElementsByTagName("text");
+    stringElements.Item(0).AppendChild(toastXml.CreateTextNode("$Title"));
+    stringElements.Item(1).AppendChild(toastXml.CreateTextNode("$Message"));
+    Windows.UI.Notifications.ToastNotification toast = new Windows.UI.Notifications.ToastNotification(toastXml);
+    Windows.UI.Notifications.ToastNotificationManager.CreateToastNotifier("AutoTask").Show(toast);
 "@
     try {
-        # 嘗試載入 Windows Runtime API 發送通知
-        Add-Type -TypeDefinition $code -Language CSharp -ReferencedAssemblies "Windows.Data.Xml.Dom.dll","Windows.UI.Notifications.dll" -ErrorAction SilentlyContinue
-        [ToastNotify.Toaster]::Show($Title, $Message)
+        if (-not ([System.Management.Automation.PSTypeName]'WinRT.Toast').Type) {
+            Add-Type -TypeDefinition "using System; using Windows.UI.Notifications; using Windows.Data.Xml.Dom; public class WinRT { public static void Toast() {} }" -ErrorAction SilentlyContinue
+        }
+        # PowerShell 7+ Toast 支援較複雜，此處為簡易相容嘗試，若失敗則忽略
+        [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null
+        $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastImageAndText02)
+        $text = $xml.GetElementsByTagName("text")
+        $text[0].AppendChild($xml.CreateTextNode($Title)) | Out-Null
+        $text[1].AppendChild($xml.CreateTextNode($Message)) | Out-Null
+        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("AutoTask").Show([Windows.UI.Notifications.ToastNotification]::new($xml))
     } catch {
-        Write-Log "Toast 通知發送失敗 (可能不支援此環境): $_" "WARN"
+        Write-Log "Toast 通知發送失敗 (可能不支援): $($_.Exception.Message)" "WARN"
     }
 }
 
 function Play-AlertSound {
-    try { [System.Media.SystemSounds]::Hand.Play() } catch { [Console]::Beep(1000, 500) }
+    [System.Console]::Beep(1000, 500)
+    [System.Console]::Beep(1500, 500)
 }
 
 # --- [主邏輯] ---
-Write-Log "=== 關機倒數程序啟動 (PID: $PID) ==="
+Write-Log "=== 啟動關機倒數程序 ($CountdownSec 秒) ==="
 
 try {
-    # 1. 嘗試初始化 GUI
-    Write-Log "正在初始化 GUI..."
+    # 1. --- [GUI 模式] ---
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "⚠️ 任務完成 - 自動關機"
-    $form.Size = New-Object System.Drawing.Size(450, 220)
+    $form.Text = "AutoTask - 任務完成"
+    $form.Size = New-Object System.Drawing.Size(400, 250)
     $form.StartPosition = "CenterScreen"
     $form.TopMost = $true
+    $form.BackColor = [System.Drawing.Color]::Black
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
-    $form.ControlBox = $false 
-    $form.BackColor = [System.Drawing.Color]::White
 
     $label = New-Object System.Windows.Forms.Label
-    $label.Text = "初始化中..."
-    $label.Font = New-Object System.Drawing.Font("Microsoft JhengHei UI", 14, [System.Drawing.FontStyle]::Bold)
+    $label.Text = "任務已完成`n系統將在 $CountdownSec 秒後關機"
+    $label.Font = New-Object System.Drawing.Font("Consolas", 14, [System.Drawing.FontStyle]::Bold)
+    $label.ForeColor = [System.Drawing.Color]::Cyan
     $label.TextAlign = "MiddleCenter"
-    $label.Location = New-Object System.Drawing.Point(20, 30)
-    $label.Size = New-Object System.Drawing.Size(400, 60)
-    $label.ForeColor = [System.Drawing.Color]::DarkRed
-    $form.Controls.Add($label)
+    $label.Dock = "Top"
+    $label.Height = 100
 
-    $button = New-Object System.Windows.Forms.Button
-    $button.Text = "取消關機"
-    $button.Font = New-Object System.Drawing.Font("Microsoft JhengHei UI", 12)
-    $button.Location = New-Object System.Drawing.Point(140, 110)
-    $button.Size = New-Object System.Drawing.Size(160, 45)
-    $button.BackColor = [System.Drawing.Color]::WhiteSmoke
-    $form.Controls.Add($button)
-
-    $timer = New-Object System.Windows.Forms.Timer
-    $timer.Interval = 1000
-
-    # GUI 事件綁定
-    $button.Add_Click({
+    $btnCancel = New-Object System.Windows.Forms.Button
+    $btnCancel.Text = "取消關機"
+    $btnCancel.Font = New-Object System.Drawing.Font("Microsoft JhengHei", 12)
+    $btnCancel.Size = New-Object System.Drawing.Size(150, 50)
+    $btnCancel.Location = New-Object System.Drawing.Point(115, 130)
+    $btnCancel.BackColor = [System.Drawing.Color]::DarkRed
+    $btnCancel.ForeColor = [System.Drawing.Color]::White
+    $btnCancel.Add_Click({
         $script:timer.Stop()
-        Write-Log "使用者手動取消關機。" "WARN"
-        $script:label.Text = "關機已取消"
-        $script:label.ForeColor = "Green"
-        $script:button.Enabled = $false
-        $form.Refresh()
-        Start-Sleep 2
-        $script:form.Close()
+        Write-Log "使用者取消關機。"
+        Send-DiscordNotification -Title "🛑 關機已取消" -Message "使用者在倒數期間手動取消了關機程序。" -Color "Orange"
+        $form.Close()
     })
 
-    $timer.Add_Tick({
-        $script:CountdownSec--
-        $min = [math]::Floor($script:CountdownSec / 60)
-        $sec = $script:CountdownSec % 60
-        $timeStr = "{0:00}:{1:00}" -f $min, $sec
-        
-        $script:label.Text = "任務完成`n將在 $timeStr 後自動關機..."
-        
-        if ($script:CountdownSec % 30 -eq 0) { Play-AlertSound } # GUI 模式下每 30 秒提醒一次
+    $form.Controls.Add($label)
+    $form.Controls.Add($btnCancel)
 
-        if ($script:CountdownSec -le 0) {
+    # 計時器
+    $script:remaining = $CountdownSec
+    $timer = New-Object System.Windows.Forms.Timer
+    $timer.Interval = 1000
+    $timer.Add_Tick({
+        $script:remaining--
+        $script:label.Text = "任務已完成`n系統將在 $script:remaining 秒後關機"
+        
+        if ($script:remaining % 30 -eq 0) { Play-AlertSound }
+
+        if ($script:remaining -le 0) {
             $script:timer.Stop()
             $script:label.Text = "正在關機..."
             $form.Refresh()
-            Write-Log "倒數結束 (GUI)，執行關機。"
+            
+            Write-Log "倒數結束，執行關機。"
+            Send-DiscordNotification -Title "🔌 系統關機" -Message "AutoTask 任務完成，系統自動關機。" -Color "Green"
+            
             Stop-Computer -Force
-            $script:form.Close()
+            $form.Close()
         }
     })
 
     $timer.Start()
-    Write-Log "GUI 建立成功，顯示視窗。"
-    
-    # 即使 GUI 成功，也發送一個 Toast 提醒 (防呆)
+    Write-Log "GUI 介面啟動成功。"
     Send-Toast "AutoTask" "任務完成，5 分鐘後自動關機。"
     
     $form.ShowDialog() | Out-Null
 
 } catch {
-    # 2. --- [背景模式 (Headless Mode)] ---
-    Write-Log "GUI 初始化失敗 (可能無桌面環境)，切換至背景模式。錯誤: $($_.Exception.Message)" "ERROR"
+    # 2. --- [Headless 模式 (Fallback)] ---
+    Write-Log "GUI 初始化失敗，切換至背景模式: $($_.Exception.Message)" "WARN"
     
-    # 發送 Discord 強力警報
-    Send-Discord "⚠️ 自動關機警報 (背景模式)" "GUI 介面啟動失敗，系統將在 5 分鐘後強制關機。請檢查遠端連線！" $true
+    Send-DiscordNotification -Title "⚠️ 自動關機倒數 (背景)" -Message "GUI 啟動失敗。系統將在 5 分鐘後關機。請檢查遠端連線！" -Color "Yellow"
     
-    # 發送 Windows 通知
-    Send-Toast "⚠️ AutoTask 警報" "GUI 失敗！系統將在 5 分鐘後強制關機！"
-
-    Write-Log "背景倒數開始 ($CountdownSec 秒)..."
-    
-    # 手動倒數迴圈
-    $Remaining = $CountdownSec
-    while ($Remaining -gt 0) {
-        if ($Remaining % 60 -eq 0) { Write-Log "背景倒數: 剩餘 $($Remaining/60) 分鐘" }
-        
-        # 聲音警報 (確保開啟聲音)
-        Play-AlertSound
-        
+    for ($i = $CountdownSec; $i -gt 0; $i--) {
+        if ($i % $SoundInterval -eq 0) { Play-AlertSound }
         Start-Sleep 1
-        $Remaining--
-        
-        # 每 30 秒再發一次 Toast 刷存在感
-        if ($Remaining % 30 -eq 0) {
-            Send-Toast "AutoTask 關機倒數" "剩餘 $Remaining 秒"
-        }
     }
-
-    Write-Log "背景倒數結束，執行強制關機..."
-    Send-Discord "系統關機" "AutoTask 已執行強制關機。" $false
+    
+    Write-Log "倒數結束 (Headless)，執行關機。"
+    Send-DiscordNotification -Title "🔌 系統關機" -Message "AutoTask (背景模式) 執行關機。" -Color "Green"
     Stop-Computer -Force
 }
