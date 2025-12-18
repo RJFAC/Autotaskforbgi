@@ -98,4 +98,85 @@ foreach ($File in $LogicFiles) {
     $Content = Get-SafeContent -Path $File.FullName
     Add-Content -Path $File_Logic -Value $Content -Encoding UTF8
 }
-Add-Content -Path $File_Logic -Value "`n
+Add-Content -Path $File_Logic -Value "`n" -Encoding UTF8
+
+# ==============================================================================
+# 2. 處理設定檔 (Configs)
+# ==============================================================================
+Write-Host " -> 2/4 提取設定檔 (Configs)..."
+Add-Content -Path $File_Config -Value "=== AutoTask Configs Dump ($SnapshotVersion) ===`n" -Encoding UTF8
+
+# 定義要抓取的設定檔副檔名 (包含 .log 如 PauseDates.log, .url 如 Webhook.url)
+$ConfigExtensions = @("*.json", "*.map", "*.xml", "*.txt", "*.log", "*.url")
+$ConfigFiles = Get-ChildItem -Path "$SourceDir\Configs" -Recurse -Include $ConfigExtensions -ErrorAction SilentlyContinue
+
+foreach ($File in $ConfigFiles) {
+    Add-FileHeader -OutFile $File_Config -FileName $File.Name
+    $Content = Get-SafeContent -Path $File.FullName
+    Add-Content -Path $File_Config -Value $Content -Encoding UTF8
+}
+Add-Content -Path $File_Config -Value "`n" -Encoding UTF8
+
+# ==============================================================================
+# 3. 處理文件 (Docs)
+# ==============================================================================
+Write-Host " -> 3/4 提取文件 (Docs)..."
+Add-Content -Path $File_Docs -Value "=== AutoTask Documentation ($SnapshotVersion) ===`n" -Encoding UTF8
+
+$DocFiles = Get-ChildItem -Path $SourceDir -Recurse -Include "*.md", "*.txt" -ErrorAction SilentlyContinue | 
+            Where-Object { $_.FullName -notmatch "Configs" -and $_.FullName -notmatch "Logs" -and $_.FullName -notmatch "Temp_" }
+
+foreach ($File in $DocFiles) {
+    Add-FileHeader -OutFile $File_Docs -FileName $File.Name
+    $Content = Get-SafeContent -Path $File.FullName
+    Add-Content -Path $File_Docs -Value $Content -Encoding UTF8
+}
+Add-Content -Path $File_Docs -Value "`n" -Encoding UTF8
+
+# ==============================================================================
+# 4. 處理日誌摘要 (Logs)
+# ==============================================================================
+Write-Host " -> 4/4 提取日誌摘要..."
+$LogsOutFile = "$DirLogs\Recent_Logs_Summary.txt"
+Add-Content -Path $LogsOutFile -Value "=== [ Recent Logs Summary ] ===`n" -Encoding UTF8
+
+# 4.1 Master Log
+$MasterLog = Get-ChildItem "$SourceDir\Logs\Master_*.log" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$LogTargets = @($MasterLog)
+
+# 4.2 BetterGI Log
+$BetterGILogsDir = "C:\Program Files\BetterGI\log"
+if (Test-Path $BetterGILogsDir) {
+    $LogTargets += Get-ChildItem "$BetterGILogsDir\log_*.log" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 2 
+}
+
+foreach ($File in $LogTargets) {
+    if ($null -eq $File) { continue }
+    Add-FileHeader -OutFile $LogsOutFile -FileName $File.Name
+    $Content = Get-SmartLogContent -FilePath $File.FullName
+    Add-Content -Path $LogsOutFile -Value $Content -Encoding UTF8
+}
+
+# ==============================================================================
+# 5. 壓縮打包
+# ==============================================================================
+Write-Host " -> 5/5 正在壓縮打包..."
+try {
+    Compress-Archive -Path "$TempDir\*" -DestinationPath $ZipPath -Force -ErrorAction Stop
+} catch {
+    Write-Host "壓縮失敗！可能原因：檔案被鎖定或權限不足。這不影響上述檔案生成。" -ForegroundColor Yellow
+    Write-Host "錯誤訊息: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
+# 清理暫存
+Remove-Item -Path $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+Write-Host "`n[OK] 快照已生成: $ZipPath" -ForegroundColor Green
+
+# UX: 自動選取檔案
+if (Test-Path $ZipPath) {
+    $arg = "/select,`"$ZipPath`""
+    Start-Process explorer.exe -ArgumentList $arg
+}
+
+Write-Host "請將該 Zip 檔案上傳給 AI 進行分析。" -ForegroundColor Yellow
+Read-Host "按 Enter 鍵結束..."
