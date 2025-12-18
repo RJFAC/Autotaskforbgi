@@ -7,6 +7,7 @@
     1. [Feature] 實作分流輸出 (Logic, Config, Docs) 以防止 AI 上下文截斷。
     2. [Fix] 擴充 Configs 抓取規則，包含 .txt, .url, .log (針對 PauseDates.log)。
     3. [Fix] 增加對空檔案的讀取保護。
+    4. [Fix] 補全日誌摘要邏輯與壓縮程序。
 #>
 
 $SnapshotVersion = "V2.13"
@@ -64,6 +65,24 @@ function Get-SafeContent {
     return $Content
 }
 
+# 智能日誌讀取 (防止鎖定與過大)
+function Get-SmartLogContent {
+    param($FilePath)
+    $LimitSize = 2MB 
+    $Item = Get-Item $FilePath
+    if ($Item.Length -gt $LimitSize) {
+        return "[SYSTEM] 日誌過大 ($([math]::Round($Item.Length/1MB,2)) MB)，僅截取最後 2000 行...`r`n" + 
+               (Get-Content $FilePath -Tail 2000 -Encoding UTF8 | Out-String)
+    } else {
+        # 使用 FileShare.ReadWrite 防止鎖定
+        $Stream = [System.IO.File]::Open($FilePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        $Reader = New-Object System.IO.StreamReader($Stream, [System.Text.Encoding]::UTF8)
+        $Text = $Reader.ReadToEnd()
+        $Reader.Close(); $Stream.Close()
+        return $Text
+    }
+}
+
 # ==============================================================================
 # 1. 處理邏輯代碼 (.ps1)
 # ==============================================================================
@@ -71,7 +90,7 @@ Write-Host " -> 1/4 提取核心代碼 (Logic)..."
 Add-Content -Path $File_Logic -Value "=== AutoTask Logic Source ($SnapshotVersion) ===`n" -Encoding UTF8
 
 # 取得根目錄與 Scripts 下的 .ps1 (排除 Snapshot 本身)
-$LogicFiles = Get-ChildItem -Path $SourceDir -Recurse -Filter "*.ps1" | 
+$LogicFiles = Get-ChildItem -Path $SourceDir -Recurse -Filter "*.ps1" -ErrorAction SilentlyContinue | 
               Where-Object { $_.Name -ne "Task_Snapshot.ps1" -and $_.FullName -notmatch "Temp_" }
 
 foreach ($File in $LogicFiles) {
