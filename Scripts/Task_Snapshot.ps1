@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-    AutoTask Snapshot Tool V2.14 (Self-Backup Enabled)
+    AutoTask Snapshot Tool V2.14 (Self-Backup Enabled & Safe Strings)
     用於打包所有腳本、設定檔與最近日誌，供 AI 進行除錯分析。
     
     V2.14 更新:
-    1. [Mod] 修改過濾邏輯，確保 Task_Snapshot.ps1 自身包含在快照中。
-    2. [Fix] 修正 EOF 標記寫入方式，使用字串拼接規避介面解析錯誤。
+    1. [Fix] 修正 EOF 標記寫入方式，使用變數拼接，防止編輯器解析錯誤或截斷。
+    2. [Mod] 修改過濾邏輯，現在會將 Task_Snapshot.ps1 自身包含在快照中。
 #>
 
 $SnapshotVersion = "V2.14"
@@ -81,8 +81,8 @@ function Get-SmartLogContent {
     }
 }
 
-# 定義安全的 EOF 標記 (避免 AI 解析錯誤 - 使用拼接方式)
-# 注意：這裡將三個反引號拆開寫，防止被識別為 Markdown 結束標記
+# [重要修正] 定義安全的 EOF 標記
+# 使用拼接方式建立字串，避免 AI 介面誤判為 Markdown 結束
 $EOF_Marker = "`n" + "``" + "`" + "eof"
 
 # ==============================================================================
@@ -100,7 +100,7 @@ foreach ($File in $LogicFiles) {
     $Content = Get-SafeContent -Path $File.FullName
     Add-Content -Path $File_Logic -Value $Content -Encoding UTF8
 }
-# [Fix] 使用變數寫入 EOF
+# 使用變數寫入標記，避免語法錯誤
 Add-Content -Path $File_Logic -Value $EOF_Marker -Encoding UTF8
 
 # ==============================================================================
@@ -109,7 +109,6 @@ Add-Content -Path $File_Logic -Value $EOF_Marker -Encoding UTF8
 Write-Host " -> 2/4 提取設定檔 (Configs)..."
 Add-Content -Path $File_Config -Value "=== AutoTask Configs Dump ($SnapshotVersion) ===`n" -Encoding UTF8
 
-# 定義要抓取的設定檔副檔名 (包含 .log 如 PauseDates.log, .url 如 Webhook.url)
 $ConfigExtensions = @("*.json", "*.map", "*.xml", "*.txt", "*.log", "*.url")
 $ConfigFiles = Get-ChildItem -Path "$SourceDir\Configs" -Recurse -Include $ConfigExtensions -ErrorAction SilentlyContinue
 
@@ -118,7 +117,6 @@ foreach ($File in $ConfigFiles) {
     $Content = Get-SafeContent -Path $File.FullName
     Add-Content -Path $File_Config -Value $Content -Encoding UTF8
 }
-# [Fix] 使用變數寫入 EOF
 Add-Content -Path $File_Config -Value $EOF_Marker -Encoding UTF8
 
 # ==============================================================================
@@ -135,7 +133,6 @@ foreach ($File in $DocFiles) {
     $Content = Get-SafeContent -Path $File.FullName
     Add-Content -Path $File_Docs -Value $Content -Encoding UTF8
 }
-# [Fix] 使用變數寫入 EOF
 Add-Content -Path $File_Docs -Value $EOF_Marker -Encoding UTF8
 
 # ==============================================================================
