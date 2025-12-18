@@ -1,16 +1,14 @@
 <#
 .SYNOPSIS
-    AutoTask Snapshot Tool V2.13 (Split Output & Config Expansion)
+    AutoTask Snapshot Tool V2.14 (Self-Backup Enabled)
     用於打包所有腳本、設定檔與最近日誌，供 AI 進行除錯分析。
     
-    V2.13 更新:
-    1. [Feature] 實作分流輸出 (Logic, Config, Docs) 以防止 AI 上下文截斷。
-    2. [Fix] 擴充 Configs 抓取規則，包含 .txt, .url, .log (針對 PauseDates.log)。
-    3. [Fix] 增加對空檔案的讀取保護。
-    4. [Fix] 補全日誌摘要邏輯與壓縮程序。
+    V2.14 更新:
+    1. [Mod] 修改過濾邏輯，確保 Task_Snapshot.ps1 自身包含在快照中。
+    2. [Fix] 修正 EOF 標記寫入方式，使用字串拼接規避介面解析錯誤。
 #>
 
-$SnapshotVersion = "V2.13"
+$SnapshotVersion = "V2.14"
 $SourceDir = "C:\AutoTask"
 $OutputDir = "C:\AutoTask_Snapshots"
 $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -83,22 +81,27 @@ function Get-SmartLogContent {
     }
 }
 
+# 定義安全的 EOF 標記 (避免 AI 解析錯誤 - 使用拼接方式)
+# 注意：這裡將三個反引號拆開寫，防止被識別為 Markdown 結束標記
+$EOF_Marker = "`n" + "``" + "`" + "eof"
+
 # ==============================================================================
 # 1. 處理邏輯代碼 (.ps1)
 # ==============================================================================
 Write-Host " -> 1/4 提取核心代碼 (Logic)..."
 Add-Content -Path $File_Logic -Value "=== AutoTask Logic Source ($SnapshotVersion) ===`n" -Encoding UTF8
 
-# 取得根目錄與 Scripts 下的 .ps1 (排除 Snapshot 本身)
+# 取得根目錄與 Scripts 下的 .ps1 (移除對自身的排除，僅排除 Temp 目錄)
 $LogicFiles = Get-ChildItem -Path $SourceDir -Recurse -Filter "*.ps1" -ErrorAction SilentlyContinue | 
-              Where-Object { $_.Name -ne "Task_Snapshot.ps1" -and $_.FullName -notmatch "Temp_" }
+              Where-Object { $_.FullName -notmatch "Temp_" }
 
 foreach ($File in $LogicFiles) {
     Add-FileHeader -OutFile $File_Logic -FileName $File.Name
     $Content = Get-SafeContent -Path $File.FullName
     Add-Content -Path $File_Logic -Value $Content -Encoding UTF8
 }
-Add-Content -Path $File_Logic -Value "`n" -Encoding UTF8
+# [Fix] 使用變數寫入 EOF
+Add-Content -Path $File_Logic -Value $EOF_Marker -Encoding UTF8
 
 # ==============================================================================
 # 2. 處理設定檔 (Configs)
@@ -115,7 +118,8 @@ foreach ($File in $ConfigFiles) {
     $Content = Get-SafeContent -Path $File.FullName
     Add-Content -Path $File_Config -Value $Content -Encoding UTF8
 }
-Add-Content -Path $File_Config -Value "`n" -Encoding UTF8
+# [Fix] 使用變數寫入 EOF
+Add-Content -Path $File_Config -Value $EOF_Marker -Encoding UTF8
 
 # ==============================================================================
 # 3. 處理文件 (Docs)
@@ -131,7 +135,8 @@ foreach ($File in $DocFiles) {
     $Content = Get-SafeContent -Path $File.FullName
     Add-Content -Path $File_Docs -Value $Content -Encoding UTF8
 }
-Add-Content -Path $File_Docs -Value "`n" -Encoding UTF8
+# [Fix] 使用變數寫入 EOF
+Add-Content -Path $File_Docs -Value $EOF_Marker -Encoding UTF8
 
 # ==============================================================================
 # 4. 處理日誌摘要 (Logs)

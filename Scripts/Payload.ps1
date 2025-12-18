@@ -1,10 +1,12 @@
 # ==============================================================================
-# AutoTask Payload Script V5.47 (Robust JSON & Safe Start)
+# AutoTask Payload Script V5.48 (ForceEnd Sequence Logic)
 # ------------------------------------------------------------------------------
-# V5.47:
-#   1. [Fix] 重寫 Update-TaskStatus，改用 Try-Catch 處理 Add-Member，防止屬性重複錯誤。
-#   2. [Fix] 增加 JSON 檔案損毀檢測與自動修復機制 (防止因空檔或亂碼導致腳本崩潰)。
-#   3. [Mod] 強化啟動流程，即使狀態檔讀取失敗也能繼續執行。
+# V5.48:
+#   1. [Feature] 實作智慧收尾邏輯：
+#      - 03:45 若未完成 -> 啟動 "forceend" 配置。
+#      - 03:55 若 "forceend" 未完成 -> 強制殺進程。
+#   2. [Refactor] 移除舊版單純的 03:50 死線檢查。
+#   3. [Fix] 補全 Log Watchdog 完整邏輯 (雙重確認與原地重試)。
 # ==============================================================================
 
 # 1. 初始化與環境設定
@@ -14,6 +16,7 @@ $DateStr = Get-Date -Format "yyyyMMdd"
 $LogFile = "$LogDir\Payload_$DateStr.log"
 $FlagDir = "$WorkDir\Flags"
 $DoneFlag = "$FlagDir\Done.flag"
+$FailFlag = "$FlagDir\Fail.flag"
 $WeeklyConfFile = "$WorkDir\Configs\WeeklyConfig.json"
 $TaskStatusFile = "$WorkDir\Configs\TaskStatus.json"
 $LastRunFile = "$WorkDir\Configs\LastRun.log"
@@ -23,309 +26,292 @@ $ScriptDir = "$WorkDir\Scripts"
 # 確保日誌目錄存在
 if (!(Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
 
-# 載入 Discord 模組 (如果存在)
-if (Test-Path "$ScriptDir\Lib_Discord.ps1") { 
-    try { . "$ScriptDir\Lib_Discord.ps1" } catch { Write-Host "Discord 模組載入失敗: $_" }
+# 載入 Discord 模組 (兼容相對路徑)
+$LibPath = "$ScriptDir\Lib_Discord.ps1"
+if (Test-Path $LibPath) { 
+    . $LibPath 
+} else {
+    function Write-Log { param($Msg, $Color="Cyan") Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] $Msg" -ForegroundColor $Color }
+    function Send-DiscordNotification { param($Title, $Message, $Color) Write-Host "[Mock Discord] $Title - $Message" }
 }
 
-# 日誌函數
-function Write-Log {
-    param ([string]$Message, [string]$Level = "INFO")
-    $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $LogEntry = "[$Timestamp] [$Level] $Message"
-    try {
-        Add-Content -Path $LogFile -Value $LogEntry -Encoding UTF8 -ErrorAction Stop
-    } catch {
-        # 如果寫入日誌失敗 (例如檔案被鎖定)，嘗試寫入 Console 避免崩潰
-        Write-Host "Log Error: $Message" -ForegroundColor Red
-    }
-    Write-Host $LogEntry
-}
+# 重新導向輸出至 Log
+Start-Transcript -Path $LogFile -Append -Force
 
-# 狀態更新函數 (V5.47: 強韌性增強版)
+Write-Log ">>> Payload 啟動 (V5.48 - ForceEnd Sequence)..." "Green"
+
+# ------------------------------------------------------------------------------
+# 函數: 更新狀態
+# ------------------------------------------------------------------------------
 function Update-TaskStatus {
-    param ([string]$Status)
-    $MaxRetries = 5
-    $Retry = 0
-    $Success = $false
+    param([string]$Status)
+    $Data = @{
+        Date = $DateStr
+        Status = $Status
+        LastUpdate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    }
+    try {
+        $Data | ConvertTo-Json | Set-Content $TaskStatusFile -Encoding UTF8
+    } catch {
+        Write-Log "⚠️ 更新狀態檔失敗: $_" "Yellow"
+    }
+}
+
+# ------------------------------------------------------------------------------
+# 函數: 執行 BetterGI 任務
+# ------------------------------------------------------------------------------
+function Run-BetterGI {
+    param([string]$ConfigName)
     
-    while (-not $Success -and $Retry -lt $MaxRetries) {
-        try {
-            $StatusJson = $null
-            $FileExists = Test-Path $TaskStatusFile
-
-            # 1. 嘗試讀取現有狀態檔
-            if ($FileExists) {
-                try {
-                    $Content = Get-Content $TaskStatusFile -Raw -Encoding UTF8 -ErrorAction Stop
-                    if (-not [string]::IsNullOrWhiteSpace($Content)) {
-                        $StatusJson = $Content | ConvertFrom-Json -ErrorAction Stop
-                    }
-                } catch {
-                    Write-Log "警告: TaskStatus.json 讀取失敗或格式損毀，將重建。錯誤: $_" "WARN"
-                    $StatusJson = $null # 標記為需要重建
-                }
-            }
-            
-            # 2. 判斷是新建還是更新
-            if ($null -eq $StatusJson) {
-                # 建立新物件 (檔案不存在或已損毀)
-                $StatusJson = [PSCustomObject]@{
-                    Date = $DateStr
-                    Status = $Status
-                    LastUpdate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-                    RetryCount = 0
-                }
-            } else {
-                # 更新現有物件
-                $StatusJson.Date = $DateStr
-                $StatusJson.Status = $Status
-                $StatusJson.LastUpdate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-                
-                # [Fix V5.47] 安全添加 RetryCount (使用 Try-Catch 忽略 MemberAlreadyExists)
-                try {
-                    $StatusJson | Add-Member -Name "RetryCount" -Value 0 -MemberType NoteProperty -ErrorAction Stop
-                } catch {
-                    # 忽略 "成員已存在" 錯誤，這是預期行為
-                }
-            }
-
-            # 3. 寫入檔案
-            $StatusJson | ConvertTo-Json -Depth 5 | Set-Content $TaskStatusFile -Encoding UTF8 -Force
-            $Success = $true
-
-        } catch {
-            Write-Log "更新 TaskStatus 寫入失敗 ($($Retry+1)/$MaxRetries): $_" "WARN"
-            Start-Sleep -Milliseconds 500
-            $Retry++
-        }
+    $BGIPath = "C:\Program Files\BetterGI\BetterGenshinImpact.exe"
+    if (-not (Test-Path $BGIPath)) {
+        Write-Log "❌ 找不到 BetterGI: $BGIPath" "Red"
+        return $false
     }
+
+    $ArgList = "--startOneDragon `"$ConfigName`""
+    Write-Log "啟動 BetterGI: $ConfigName" "Cyan"
+    
+    $Proc = Start-Process -FilePath $BGIPath -ArgumentList $ArgList -PassThru
+    return $Proc
 }
 
-function Notify {
-    param ([string]$Title, [string]$Msg, [string]$Color="Blue")
-    if (Get-Command Send-DiscordNotification -ErrorAction SilentlyContinue) {
-        Send-DiscordNotification -Title $Title -Message $Msg -Color $Color
-    }
-}
-
-# 全域錯誤捕捉
-trap {
-    $Err = $_.Exception.Message
-    Write-Log "CRASH: $Err" "ERROR"
-    # 嘗試更新狀態，但不保證成功，因為可能是在 Update-TaskStatus 內部崩潰
-    try { Update-TaskStatus "Failed" } catch {}
-    Notify "❌ Payload 腳本崩潰 (Trap)" "錯誤訊息: $Err`nStackTrace: $($_.ScriptStackTrace)" "Red"
-    exit 1
-}
-
-# 2. 啟動檢查 (Pre-flight Checks)
-Write-Log ">>> Payload 啟動 (V5.47)..."
-
-# 計算今日 Key
-$Now = Get-Date
-if ($Now.Hour -lt 4) { $TodayKey = $Now.AddDays(-1).ToString("yyyyMMdd") } else { $TodayKey = $Now.ToString("yyyyMMdd") }
-
-# 重複執行防護
-if (Test-Path $LastRunFile) {
+# ------------------------------------------------------------------------------
+# 函數: 測試 JSON 檔案 (SSOT V3.7 要求)
+# ------------------------------------------------------------------------------
+function Test-JsonFile {
+    param($Path)
+    if (-not (Test-Path $Path)) { return $false }
     try {
-        $LastRunDate = (Get-Content $LastRunFile -Raw).Trim()
-        $IsForceRun = Test-Path $ForceRunFlag
-        if ($LastRunDate -eq $TodayKey) {
-            if ($IsForceRun) {
-                Write-Log "⚠️ 存在 ForceRun 標記，強制重跑。" "YELLOW"
-                Remove-Item $ForceRunFlag -Force -ErrorAction SilentlyContinue
-            } else {
-                Write-Log "✅ 今日任務已完成 ($TodayKey)。退出。" "GREEN"
-                Notify "⚠️ Payload 重複啟動" "檢測到今日任務已完成，自動略過。" "Yellow"
-                Start-Sleep 3; exit 0
-            }
-        }
-    } catch {}
+        $Content = Get-Content $Path -Raw -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace($Content)) { return $false }
+        $null = $Content | ConvertFrom-Json -ErrorAction Stop
+        return $true
+    } catch {
+        return $false
+    }
 }
 
-# 狀態同步：Running
+# 2. 啟動檢查
 Update-TaskStatus "Running"
+New-Item -Path "$FlagDir\Payload.flag" -ItemType File -Force | Out-Null
 
-# 03:50 等待邏輯
-if ($Now.Hour -eq 3 -and $Now.Minute -ge 50) {
-    Write-Log "⚠️ 處於重置緩衝期，進入等待..." "WARNING"
-    Notify "⏳ 進入跨日等待" "現在時間 03:50+，Payload 將暫停直到 04:00。" "Yellow"
-    while ((Get-Date).Hour -ne 4) { Start-Sleep 10 }
-    Write-Log ">>> 解除鎖定！" "GREEN"
-    $Now = Get-Date
-    if ($Now.Hour -lt 4) { $TodayKey = $Now.AddDays(-1).ToString("yyyyMMdd") } else { $TodayKey = $Now.ToString("yyyyMMdd") }
+# 檢查重複執行
+if (Test-Path $LastRunFile) {
+    $LastRunDate = (Get-Content $LastRunFile -ErrorAction SilentlyContinue).Trim()
+    if ($LastRunDate -eq $DateStr -and -not (Test-Path $ForceRunFlag)) {
+        Write-Log "今日任務已完成 (LastRun match)，且無強制標記。退出。" "Yellow"
+        Send-DiscordNotification -Title "⚠️ 任務跳過" -Message "今日 ($DateStr) 任務紀錄已存在。" -Color "Yellow"
+        Stop-Transcript
+        exit 0
+    }
+}
+if (Test-Path $ForceRunFlag) { Remove-Item $ForceRunFlag -Force }
+
+# 3. 任務解析
+$TaskList = @()
+$DateConfigPath = "$WorkDir\Configs\DateConfig.map"
+
+# A. 優先讀取 DateConfig.map
+if (Test-Path $DateConfigPath) {
+    $MapContent = Get-Content $DateConfigPath
+    foreach ($line in $MapContent) {
+        if ($line -match "^$DateStr=(.*)") {
+            $TaskList = $Matches[1].Split(",")
+            Write-Log "使用 DateConfig 配置。" "Cyan"
+            break
+        }
+    }
 }
 
-# --- 配置讀取邏輯 ---
-$MapFile = "$WorkDir\Configs\DateConfig.map"
-$RawTaskString = "Default"
+# B. Fallback: WeeklyConfig.json
+if ($TaskList.Count -eq 0) {
+    if (Test-JsonFile $WeeklyConfFile) {
+        try {
+            $WeeklyJson = Get-Content $WeeklyConfFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            $DayOfWeek = (Get-Date).DayOfWeek.ToString()
+            if ($WeeklyJson.$DayOfWeek) {
+                $TaskList = $WeeklyJson.$DayOfWeek.Split(",")
+                Write-Log "使用 WeeklyConfig ($DayOfWeek) 配置。" "Cyan"
+                
+                # Day 8 紊亂期演算法 (Turbulence)
+                $BaseDate = Get-Date -Date "2024-11-20"
+                $DiffDays = ((Get-Date) - $BaseDate).Days
+                if ($DiffDays % 42 -eq 8) {
+                    Write-Log "🌊 偵測到紊亂爆發期 (Day 8)，注入 [WAIT] 與 Turbulence 任務。" "Magenta"
+                    # 注入邏輯：一般任務 -> 等待 -> 紊亂任務
+                    $TurbulenceTask = if ($WeeklyJson.Turbulence.$DayOfWeek) { $WeeklyJson.Turbulence.$DayOfWeek } else { "每日任務" }
+                    $TaskList = $TaskList + @("[WAIT]", $TurbulenceTask)
+                }
+            }
+        } catch {
+            Write-Log "WeeklyConfig 解析失敗，使用預設值。" "Red"
+        }
+    }
+}
 
-if (Test-Path $MapFile) {
-    try {
-        $MapContent = Get-Content $MapFile
-        foreach ($Line in $MapContent) {
-            if ($Line -match "^$TodayKey=(.*)") {
-                $RawTaskString = $Matches[1].Trim()
+# C. Default
+if ($TaskList.Count -eq 0) { $TaskList = @("每日任務") }
+
+Write-Log "今日任務清單: $($TaskList -join ', ')" "Cyan"
+Send-DiscordNotification -Title "🚀 任務啟動" -Message "配置: $($TaskList -join ', ')" -Color "Blue"
+
+# 4. 執行迴圈 (含 ForceEnd 邏輯)
+$AllSuccess = $true
+
+foreach ($TaskName in $TaskList) {
+    
+    # === [特殊標記] WAIT 模式 ===
+    if ($TaskName -eq "[WAIT]") {
+        Write-Log "遇到 [WAIT] 標記，檢查時間..." "Yellow"
+        $WaitUntil = (Get-Date).Date.AddHours(10).AddMinutes(5) # 10:05
+        if ((Get-Date) -lt $WaitUntil) {
+            Write-Log "時間早於 10:05，進入等待模式..." "Yellow"
+            Send-DiscordNotification -Title "⏳ 進入等待" -Message "等待伺服器刷新 (10:05)..." -Color "Orange"
+            
+            while ((Get-Date) -lt $WaitUntil) {
+                Start-Sleep 60
+                # 等待期間仍需檢查 ForceEnd
+                if ((Get-Date).Hour -eq 3 -and (Get-Date).Minute -ge 45) { break } 
+            }
+            Send-DiscordNotification -Title "▶️ 恢復執行" -Message "等待結束，繼續任務。" -Color "Green"
+        } else {
+            Write-Log "時間已過 10:05，略過等待。" "Cyan"
+        }
+        continue
+    }
+
+    # === [關鍵修改] 03:45 ForceEnd 檢查點 ===
+    $Now = Get-Date
+    if ($Now.Hour -eq 3 -and $Now.Minute -ge 45) {
+        Write-Log "⚠️ [ForceEnd] 時間已達 03:45，前序任務未完成。" "Yellow"
+        Write-Log "🛑 觸發收尾流程：停止當前任務，轉為執行 'forceend'。" "Yellow"
+        Send-DiscordNotification -Title "🛑 觸發強制收尾" -Message "時間 03:45，切換至 forceend 配置。" -Color "Orange"
+
+        # 1. 強制關閉當前所有遊戲相關進程
+        Stop-Process -Name "BetterGenshinImpact", "YuanShen", "GenshinImpact" -Force -ErrorAction SilentlyContinue
+        Start-Sleep 5
+
+        # 2. 啟動 forceend 配置
+        $ForceProc = Run-BetterGI "forceend"
+        
+        # 3. 監控 forceend 直到 03:55
+        while ($true) {
+            if ($ForceProc.HasExited) {
+                Write-Log "✅ 'forceend' 配置執行完畢。" "Green"
                 break
             }
-        }
-    } catch {
-        Write-Log "讀取 MapFile 失敗，使用預設值: $_" "WARN"
-    }
-}
 
-$RefDate = [datetime]"2024-08-28T00:00:00"
-$CycleOffset = ($Now - $RefDate).TotalDays % 42
-if ($CycleOffset -lt 0) { $CycleOffset += 42 }
-$IsTurbulenceDay1 = ($CycleOffset -ge 7.0 -and $CycleOffset -lt 8.0)
-
-if ($RawTaskString -eq "Default") {
-    if (Test-Path $WeeklyConfFile) {
-        try {
-            $WkJson = Get-Content $WeeklyConfFile -Raw | ConvertFrom-Json
-            $WeekKey = $Now.DayOfWeek.ToString() 
-            $IsTurbulencePeriod = ($CycleOffset -ge 7.0 -and $CycleOffset -lt 17.2)
-            
-            if ($IsTurbulenceDay1) {
-                $WkDef = if ($WkJson.$WeekKey) { $WkJson.$WeekKey } else { "Default" }
-                $WkTurb = if ($WkJson.Turbulence -and $WkJson.Turbulence.$WeekKey) { $WkJson.Turbulence.$WeekKey } else { "Default" }
-                $RawTaskString = "$WkDef,[WAIT],$WkTurb"
-            } elseif ($IsTurbulencePeriod) {
-                 if ($WkJson.Turbulence -and $WkJson.Turbulence.$WeekKey) { $RawTaskString = $WkJson.Turbulence.$WeekKey }
-                 else { if ($WkJson.$WeekKey) { $RawTaskString = $WkJson.$WeekKey } }
-            } else {
-                if ($WkJson.$WeekKey) { $RawTaskString = $WkJson.$WeekKey }
-            }
-        } catch { Write-Log "讀取 WeeklyConfig 失敗: $_" "ERROR" }
-    }
-}
-
-# 發送正式啟動通知
-Notify "🚀 Payload 任務啟動" "日期: $TodayKey`n配置: $RawTaskString" "Blue"
-
-$TaskList = @()
-if ($RawTaskString -match ",") { $TaskList = $RawTaskString -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" } } else { $TaskList = @($RawTaskString) }
-
-# 3. 準備 BetterGI
-$BetterGIPath = "C:\Program Files\BetterGI\BetterGI.exe"
-if (-not (Test-Path $BetterGIPath)) { 
-    Notify "❌ 致命錯誤" "找不到 BetterGI 執行檔！" "Red"
-    exit 1 
-}
-$BGIDir = Split-Path $BetterGIPath -Parent
-$BGILogsDir = Join-Path $BGIDir "log"
-Stop-Process -Name "BetterGI", "YuanShen", "GenshinImpact" -Force -ErrorAction SilentlyContinue
-
-# 推斷 Day 8 等待點
-$ExplicitWaitIndex = -1
-for ($k = 0; $k -lt $TaskList.Count; $k++) { if ($TaskList[$k] -eq "[WAIT]") { $ExplicitWaitIndex = $k; break } }
-$SplitIndex = -1 
-if ($IsTurbulenceDay1 -and $ExplicitWaitIndex -lt 0) { if ($TaskList.Count -gt 2) { $SplitIndex = 3 } else { $SplitIndex = 1 } }
-
-# ----------------------------
-# 執行迴圈
-# ----------------------------
-$MaxTaskRetries = 3 
-
-for ($i = 0; $i -lt $TaskList.Count; $i++) {
-    $CurrentTask = $TaskList[$i]
-    
-    # WAIT 處理
-    $NeedWait = $false
-    if ($IsTurbulenceDay1) {
-        if ($ExplicitWaitIndex -ge 0) { if ($i -eq $ExplicitWaitIndex) { $NeedWait = $true } } elseif ($i -eq $SplitIndex) { $NeedWait = $true }
-    }
-    if ($NeedWait) {
-        Write-Log "=== 進入 10:00 等待模式 ===" "YELLOW"
-        Notify "⏳ 暫停任務" "正在等待時間到達 10:00 (Day 8 機制)..." "Yellow"
-        $TargetTime = $Now.Date.AddHours(10)
-        while ((Get-Date) -lt $TargetTime) {
-            if ((Get-Date).Hour -ge 14) { break }
-            Start-Sleep 30 
-        }
-        Notify "▶️ 恢復任務" "時間已達，繼續執行後續配置。" "Green"
-    }
-
-    if ($CurrentTask -eq "[WAIT]") { continue }
-
-    # 重試迴圈
-    $RetryCount = 0
-    $TaskSuccess = $false
-
-    while ($RetryCount -lt $MaxTaskRetries -and -not $TaskSuccess) {
-        Write-Log "啟動 BetterGI: $CurrentTask (Attempt $($RetryCount + 1))"
-        Stop-Process -Name "BetterGI" -Force -ErrorAction SilentlyContinue
-        
-        $Process = Start-Process -FilePath $BetterGIPath -ArgumentList "--startOneDragon `"$CurrentTask`"" -WorkingDirectory $BGIDir -PassThru
-        Start-Sleep 20 
-        
-        $CurrentBGILogPath = ""
-        if (Test-Path $BGILogsDir) {
-            $LatestLog = Get-ChildItem $BGILogsDir -Filter "*.log" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($LatestLog) { $CurrentBGILogPath = $LatestLog.FullName }
-        }
-
-        # 監控
-        $StuckThresholdMinutes = 15
-        while ($true) {
-            if ($Process.HasExited) { $TaskSuccess = $true; break }
+            # 檢查是否到達 03:55 死線
             $CheckTime = Get-Date
-            
-            # 死線
-            if ($CheckTime.Hour -eq 3 -and $CheckTime.Minute -ge 50) {
-                 Stop-Process -Id $Process.Id -Force
-                 Write-Log "⚠️ 03:50 死線觸發。" "RED"
-                 Update-TaskStatus "ForceEnd"
-                 Notify "⛔ 強制中止" "觸發 03:50 死線，為防止跨日重置，強制停止任務。" "Red"
-                 exit 0 
+            if ($CheckTime.Hour -eq 3 -and $CheckTime.Minute -ge 55) {
+                Write-Log "⏰ [Deadline] 時間已達 03:55，'forceend' 未能完成。" "Red"
+                Write-Log "🛑 強制終止所有程序以保護隔日排程。" "Red"
+                Stop-Process -Id $ForceProc.Id -Force -ErrorAction SilentlyContinue
+                Send-DiscordNotification -Title "❌ 收尾逾時" -Message "forceend 在 03:55 前未能完成，已強制終止。" -Color "Red"
+                break
             }
+            Start-Sleep 5
+        }
 
-            # 卡死偵測
-            if ($CurrentBGILogPath -and (Test-Path $CurrentBGILogPath)) {
-                $LogFileItem = Get-Item $CurrentBGILogPath
-                if (($CheckTime - $LogFileItem.LastWriteTime).TotalMinutes -gt $StuckThresholdMinutes) {
-                    # 雙重確認
-                    $ReCheckLog = Get-ChildItem $BGILogsDir -Filter "*.log" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-                    if ($ReCheckLog -and $ReCheckLog.FullName -ne $CurrentBGILogPath) {
-                        Write-Log "切換日誌目標 -> $($ReCheckLog.Name)" "GREEN"
-                        $CurrentBGILogPath = $ReCheckLog.FullName
-                        continue 
-                    } else {
-                        Write-Log "判定真卡死。" "RED"
-                        Stop-Process -Id $Process.Id -Force
+        # 4. 最終清理
+        Stop-Process -Name "BetterGenshinImpact", "YuanShen", "GenshinImpact" -Force -ErrorAction SilentlyContinue
+        
+        # 5. 退出並標記 (視為本次流程結束，等待明天)
+        Update-TaskStatus "ForceEnded"
+        New-Item -Path $DoneFlag -ItemType File -Force | Out-Null
+        $DateStr | Set-Content $LastRunFile -Encoding UTF8
+        
+        Write-Log ">>> Payload 結束 (ForceEnd Mode)。" "Magenta"
+        Stop-Transcript
+        exit 0
+    }
+    # ========================================
+
+    # 正常任務執行 (含 Watchdog 邏輯)
+    Write-Log "執行子任務: $TaskName"
+    $Proc = Run-BetterGI $TaskName
+    $TaskStartTime = Get-Date
+    
+    # [Watchdog] 初始鎖定日誌
+    Start-Sleep 20 # 等待 BGI 生成 Log
+    $CurrentBGILogPath = $null
+    $BGILogDir = "C:\Program Files\BetterGI\log"
+    try {
+        $LatestLog = Get-ChildItem "$BGILogDir\log_*.log" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($LatestLog) { 
+            $CurrentBGILogPath = $LatestLog.FullName
+            Write-Log "已鎖定監控日誌: $($LatestLog.Name)" "Cyan"
+        }
+    } catch {}
+
+    # [Watchdog] 迴圈
+    $RetryCount = 0
+    $MaxTaskRetries = 3
+    $LogStuckThreshold = 15 # 分鐘
+
+    while (-not $Proc.HasExited) {
+        if ($CurrentBGILogPath) {
+            $LogItem = Get-Item $CurrentBGILogPath
+            $IdleMinutes = ((Get-Date) - $LogItem.LastWriteTime).TotalMinutes
+            
+            if ($IdleMinutes -ge $LogStuckThreshold) {
+                Write-Log "⚠️ 警告: 日誌已靜止 $IdleMinutes 分鐘，執行雙重確認..." "Orange"
+                
+                # 雙重確認: 檢查是否有更新的 Log 檔產生 (Log Rotation)
+                $ReCheckLog = Get-ChildItem "$BGILogDir\log_*.log" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                if ($ReCheckLog.LastWriteTime -gt $LogItem.LastWriteTime) {
+                    Write-Log "發現新日誌文件 $($ReCheckLog.Name)，切換監控目標。" "Green"
+                    $CurrentBGILogPath = $ReCheckLog.FullName
+                } else {
+                    Write-Log "❌ 判定真卡死 (Stuck)。執行原地重試 ($($RetryCount+1)/$MaxTaskRetries)..." "Red"
+                    Stop-Process -Id $Proc.Id -Force -ErrorAction SilentlyContinue
+                    Stop-Process -Name "YuanShen", "GenshinImpact" -Force -ErrorAction SilentlyContinue
+                    
+                    if ($RetryCount -lt $MaxTaskRetries) {
                         $RetryCount++
-                        if ($RetryCount -lt $MaxTaskRetries) {
-                            Notify "🔄 任務卡死重試" "任務: $CurrentTask`n嘗試重啟 ($RetryCount/$MaxTaskRetries)..." "Orange"
-                            break # 重試
-                        } else {
-                            Notify "❌ 任務失敗" "任務: $CurrentTask 已達最大重試次數，放棄執行。" "Red"
-                            Update-TaskStatus "Failed"
-                            New-Item -ItemType File -Path "$FlagDir\Fail.flag" -Force | Out-Null
-                            exit 1
-                        }
+                        Send-DiscordNotification -Title "🔄 任務重試" -Message "任務 $TaskName 卡死，第 $RetryCount 次重啟。" -Color "Orange"
+                        Start-Sleep 5
+                        $Proc = Run-BetterGI $TaskName # 重啟
+                        # 重置 Log 鎖定
+                        Start-Sleep 20
+                        try {
+                            $LatestLog = Get-ChildItem "$BGILogDir\log_*.log" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                            if ($LatestLog) { $CurrentBGILogPath = $LatestLog.FullName }
+                        } catch {}
+                        continue
+                    } else {
+                        Write-Log "已達最大重試次數，放棄此任務。" "Red"
+                        Send-DiscordNotification -Title "❌ 任務失敗" -Message "任務 $TaskName 重試失敗。" -Color "Red"
+                        $AllSuccess = $false
+                        break 
                     }
                 }
             }
-            Start-Sleep 10
         }
-        if ($TaskSuccess) { break }
+        Start-Sleep 10
     }
-
-    if (-not $TaskSuccess) {
-        Notify "❌ 任務異常終止" "Payload 內部錯誤: 任務 $CurrentTask 未能成功完成。" "Red"
-        Update-TaskStatus "Failed"
-        exit 1
-    }
-    if ($i -lt ($TaskList.Count - 1)) {
-        Stop-Process -Name "YuanShen", "GenshinImpact" -Force -ErrorAction SilentlyContinue
-        Start-Sleep 5
-    }
+    
+    # 任務間清理
+    Stop-Process -Name "YuanShen", "GenshinImpact" -Force -ErrorAction SilentlyContinue
+    Start-Sleep 5
 }
 
-# 4. 結算
-Write-Log "Payload 執行結束。"
-New-Item -ItemType File -Path $DoneFlag -Force | Out-Null
-Set-Content -Path $LastRunFile -Value $TodayKey
-Update-TaskStatus "Success"
-shutdown.exe /l /f
+# 5. 正常結算
+if ($AllSuccess) {
+    Write-Log "所有任務執行完畢。" "Green"
+    Update-TaskStatus "Success"
+} else {
+    Write-Log "任務執行完畢，但有部分失敗。" "Red"
+    Update-TaskStatus "Failed" # 這裡不設 FailFlag，讓 Master 仍能執行收尾，但知道有錯
+}
+
+# 無論如何都建立 DoneFlag 讓 Master 收尾 (ForceEnd 以外的正常結束流程)
+New-Item -Path $DoneFlag -ItemType File -Force | Out-Null
+$DateStr | Set-Content $LastRunFile -Encoding UTF8
+
+# 6. 登出 (Logoff)
+Write-Log "執行登出..."
+shutdown /l
+
+Stop-Transcript
