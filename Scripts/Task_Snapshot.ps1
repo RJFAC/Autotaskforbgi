@@ -1,13 +1,20 @@
 <#
 .SYNOPSIS
-    AutoTask Snapshot Tool V2.12 (Debug & Fix Path)
+    AutoTask Snapshot Tool V2.14 (Smart Log Filter)
     用於打包所有腳本、設定檔與最近日誌，供 AI 進行除錯分析。
+    V2.14:
+    1. [Logic] 引入智慧日誌過濾機制：
+       - 初始讀取擴大至 200KB。
+       - 過濾掉無用的 [DBG] 訊息，但保留包含錯誤關鍵字的 Debug 行。
+       - 最終輸出限制在 50KB 以內，確保 AI 能讀取到更高密度的關鍵資訊。
+    V2.13: 
+    1. [Optimization] 將日誌擷取上限從 2MB 下修至 50KB。
     V2.12: 
-    1. 修正 BetterGI 日誌路徑為 "C:\Program Files\BetterGI\log"。
-    2. 新增 Global Trap 與 Read-Host，確保程式發生錯誤時不會閃退，讓使用者能閱讀紅字。
+    1. 修正 BetterGI 日誌路徑。
+    2. 新增 Global Trap 防閃退。
 #>
 
-$SnapshotVersion = "V2.12"
+$SnapshotVersion = "V2.14"
 $SourceDir = "C:\AutoTask"
 $OutputDir = "C:\AutoTask_Snapshots"
 $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -98,7 +105,7 @@ foreach ($TaskName in $TasksToExport) {
 }
 
 # ==============================================================================
-# 3. 日誌摘要
+# 3. 日誌摘要 (V2.14 智慧過濾版)
 # ==============================================================================
 Write-Host " -> 3/4 正在生成日誌摘要..."
 
@@ -106,16 +113,53 @@ function Get-SmartLogContent {
     param ( [string]$FilePath )
     try {
         $FileInfo = Get-Item $FilePath
-        # 使用 FileStream 以 ReadOnly 模式開啟，避免鎖定錯誤
+        
+        # 1. 初始讀取範圍設定
+        # ReadBytes: 200KB (先抓取較大範圍以利過濾，約等於 8000 行)
+        # OutputLimit: 50KB (最終交給 AI 的最大長度，約 2000 行)
+        $ReadBytes = 204800 
+        $OutputLimit = 51200 
+        
+        # 使用 FileStream 以 ReadOnly 模式開啟，避免鎖定
         $Stream = [System.IO.File]::Open($FilePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        
+        $StartPos = 0
+        if ($Stream.Length -gt $ReadBytes) {
+            $StartPos = $Stream.Length - $ReadBytes
+        }
+        
+        $null = $Stream.Seek($StartPos, [System.IO.SeekOrigin]::Begin)
         $Reader = New-Object System.IO.StreamReader($Stream)
         $Content = $Reader.ReadToEnd()
         $Reader.Close(); $Stream.Close()
 
-        if ($Content.Length -gt 2MB) {
-            $Content = $Content.Substring($Content.Length - 2MB)
-            return "[TRUNCATED] ...`r`n`r`n" + $Content
+        # 2. 內容過濾邏輯 (Noise Reduction)
+        # 如果內容超過輸出限制，嘗試過濾掉 [DBG] 雜訊
+        if ($Content.Length -gt $OutputLimit) {
+            # 將內容分割為陣列進行處理
+            $Lines = $Content -split "`r?`n"
+            $FilteredLines = @()
+            
+            foreach ($Line in $Lines) {
+                # 邏輯: 
+                # 1. 保留所有非 [DBG] 行 (包含 INF, WRN, ERR, FATAL)
+                # 2. 若是 [DBG] 行，僅保留含有關鍵錯誤字眼的行 (防止 Debug 級別的 StackTrace 被誤刪)
+                if ($Line -notmatch "\[DBG\]" -or $Line -match "Exception" -or $Line -match "Error" -or $Line -match "Fail" -or $Line -match "Stack Trace" -or $Line -match "Fatal") {
+                    $FilteredLines += $Line
+                }
+            }
+            # 重新組合成字串
+            $Content = $FilteredLines -join "`r`n"
+            
+            # 3. 二次裁切 (Final Trim)
+            # 如果過濾後仍然過大，則取最後的 OutputLimit 部分
+            if ($Content.Length -gt $OutputLimit) {
+                $Content = "[...Smart Filtered & Truncated...]`r`n" + $Content.Substring($Content.Length - $OutputLimit)
+            } else {
+                $Content = "[...Smart Filtered (No Truncation needed)...]`r`n" + $Content
+            }
         }
+
         return $Content
     } catch {
         return "[ERROR READ LOG] $($_.Exception.Message)"
@@ -124,11 +168,10 @@ function Get-SmartLogContent {
 
 $LogsDir = "$SourceDir\Logs"
 $RemoteLogsDir = "$SourceDir\1Remote\Log"
-# [V2.12 Fix] 更新 BetterGI 日誌路徑為 "log" (小寫)
 $BetterGILogsDir = "C:\Program Files\BetterGI\log"
 
 $LogsOutFile = Join-Path $TempLogs "Recent_Logs_Summary.txt"
-Set-Content -Path $LogsOutFile -Value "=== [ Recent Logs Summary ] ===`r`n" -Encoding UTF8
+Set-Content -Path $LogsOutFile -Value "=== [ Recent Logs Summary (Smart Filter Active) ] ===`r`n" -Encoding UTF8
 
 $LogTargets = @()
 if (Test-Path $LogsDir) { $LogTargets += Get-ChildItem -Path $LogsDir -Filter "*.log" | Sort LastWriteTime -Desc | Select -First 2 }
