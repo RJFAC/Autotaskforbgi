@@ -1,17 +1,16 @@
 <#
 .SYNOPSIS
-    AutoTask AI Context Pack Generator V3.4
+    AutoTask AI Context Pack Generator V3.5
     專為 "上傳給 AI 進行開發與除錯" 設計的快照工具。
     
-    V3.4 Fixes:
-    1. [Path] 修正文件搜尋邏輯，增加對 "Scripts" 目錄的掃描，解決找不到 SSOT 的問題。
+    V3.5 Fixes:
+    1. [Critical] 修復文件收集迴圈中的類型錯誤 (FileInfo op_Addition)，強制轉型為陣列 @() 以避免崩潰。
     
-    V3.3 Fixes:
-    1. [Syntax] 全面修復 PowerShell 解析錯誤 (Regex 引號, &, }).
-    2. [Compat] 確保使用 [System.Math] 相容 PS 5.1。
+    V3.4 Fixes:
+    1. [Path] 修正文件搜尋邏輯，增加對 "Scripts" 目錄的掃描。
 #>
 
-$SnapshotVersion = "V3.4 (AI Context Pack)"
+$SnapshotVersion = "V3.5 (AI Context Pack)"
 $SourceDir = "C:\AutoTask"
 $OutputDir = "C:\AutoTask_Snapshots"
 $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -59,8 +58,10 @@ $FoundDocs = $false
 foreach ($Path in $DocSearchPaths) {
     if (Test-Path $Path) {
         foreach ($Pattern in $DocPatterns) {
-            $Files = Get-ChildItem -Path $Path -Filter "$Pattern.txt" -ErrorAction SilentlyContinue
-            $Files += Get-ChildItem -Path $Path -Filter "$Pattern.md" -ErrorAction SilentlyContinue
+            # [V3.5 FIX] 強制使用 @() 轉型為陣列，避免單一檔案時發生 op_Addition 錯誤
+            $Files = @(Get-ChildItem -Path $Path -Filter "$Pattern.txt" -ErrorAction SilentlyContinue)
+            $Files += @(Get-ChildItem -Path $Path -Filter "$Pattern.md" -ErrorAction SilentlyContinue)
+            
             foreach ($File in $Files) {
                 # 避免重複複製 (若根目錄與 Scripts 都有)
                 $DestPath = Join-Path $TempDocs $File.Name
