@@ -4,14 +4,14 @@
     專為 "上傳給 AI 進行開發與除錯" 設計的快照工具。
     
     V3.3 Fixes:
-    1. [Fix] 徹底修復第 160 行遺漏的 [math] 引用，改為 [System.Math]，解決 PS 5.1 閃退問題。
+    1. [Syntax] 全面修復 PowerShell 解析錯誤：
+       - 修正 Sanitize-Content 中的正則表達式引號問題。
+       - 移除字串中可能導致解析錯誤的 '&' 符號。
+       - 補上遺失的函式結尾 '}'。
+    2. [Compat] 確保使用 [System.Math] 相容 PS 5.1。
     
-    V3.2 Fixes:
-    1. [Compat] 將 [math] 替換為 [System.Math] 以支援 Windows PowerShell 5.1。
-    2. [Syntax] 優化 Start-Process 參數寫法，避免引號解析錯誤導致閃退。
-    
-    V3.1 Fix:
-    1. [Critical] 修復 V3.0 最後一行 Start-Process 的引號語法錯誤。
+    V3.2/V3.1 Fixes:
+    - 修復 Explorer 啟動引號問題。
 #>
 
 $SnapshotVersion = "V3.3 (AI Context Pack)"
@@ -34,7 +34,7 @@ trap {
     exit 1
 }
 
-# 建立暫存目錄結構 (優化順序)
+# 建立暫存目錄結構
 $TempDir = Join-Path $OutputDir "Temp_$Timestamp"
 $TempDocs = Join-Path $TempDir "00_Documentation"
 $TempSource = Join-Path $TempDir "01_Source_Code"
@@ -53,14 +53,12 @@ Write-Host "正在準備 AI 上下文包..."
 # 1. 文件聚合 (Documentation)
 # ==============================================================================
 Write-Host " -> 1/5 收集系統文件 (SSOT/Manual)..."
-# 定義關鍵文件名稱模式
 $DocPatterns = @("AutoTask_System_SSOT*", "SSOT_Maintenance*", "Developer_Manual*", "AutoTask_Core_Analysis*")
 $FoundDocs = $false
 
 foreach ($Pattern in $DocPatterns) {
     $Files = Get-ChildItem -Path $SourceDir -Filter "$Pattern.txt" -ErrorAction SilentlyContinue
     $Files += Get-ChildItem -Path $SourceDir -Filter "$Pattern.md" -ErrorAction SilentlyContinue
-    
     foreach ($File in $Files) {
         Copy-Item -Path $File.FullName -Destination $TempDocs -Force
         Write-Host "    + 包含: $($File.Name)" -ForegroundColor Green
@@ -69,8 +67,8 @@ foreach ($Pattern in $DocPatterns) {
 }
 
 if (-not $FoundDocs) {
-    Write-Host "    [提示] 未在根目錄找到 SSOT 文件，建議將 SSOT 存檔至 C:\AutoTask 以便 AI 讀取。" -ForegroundColor Yellow
-    Set-Content -Path "$TempDocs\READ_ME.txt" -Value "SSOT files were not found in the source directory. Please generate or upload them separately." -Encoding UTF8
+    Write-Host "    [提示] 未在根目錄找到 SSOT 文件。" -ForegroundColor Yellow
+    Set-Content -Path "$TempDocs\READ_ME.txt" -Value "SSOT files not found." -Encoding UTF8
 }
 
 # ==============================================================================
@@ -102,14 +100,19 @@ Set-Content -Path $CombinedConfigFile -Value "=== [ AutoTask Configs (Sanitized)
 function Sanitize-Content {
     param ([string]$Content)
     if ([string]::IsNullOrWhiteSpace($Content)) { return "" }
+    
     # 替換使用者名稱
     $Content = $Content -replace [regex]::Escape($SensitiveUser), "User"
     # 替換機器名稱
     $Content = $Content -replace [regex]::Escape($SensitiveMachine), "LOCALHOST"
-    # 替換可能的完整路徑 C:\Users\XXX
-    $Content = $Content -replace "C:\\Users\\[^\\\"]+", "%USERPROFILE%"
+    
+    # [FIX] 使用單引號定義 Regex，避免 PowerShell 解析錯誤
+    # 替換 C:\Users\XXX 路徑
+    $Pattern = 'C:\\Users\\[^\\]+'
+    $Content = $Content -replace $Pattern, "%USERPROFILE%"
+    
     return $Content
-}
+} # [FIX] 補上遺失的括號
 
 # 處理一般 Configs
 $ConfigFiles = Get-ChildItem -Path "$SourceDir\Configs" -File
@@ -155,9 +158,7 @@ function Get-SmartLogContent {
     param ( [string]$FilePath )
     try {
         $FileInfo = Get-Item $FilePath
-        # 初始讀取 200KB
         $ReadBytes = 204800 
-        # 輸出限制 50KB
         $OutputLimit = 51200 
         
         $Stream = [System.IO.File]::Open($FilePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
@@ -168,10 +169,8 @@ function Get-SmartLogContent {
         $Content = $Reader.ReadToEnd()
         $Reader.Close(); $Stream.Close()
 
-        # 脫敏處理 (Log 也可能包含路徑)
         $Content = Sanitize-Content $Content
 
-        # 雜訊過濾
         if ($Content.Length -gt $OutputLimit) {
             $Lines = $Content -split "`r?`n"
             $FilteredLines = @()
@@ -182,9 +181,9 @@ function Get-SmartLogContent {
             }
             $Content = $FilteredLines -join "`r`n"
             
-            # [V3.3 FIX] Use [System.Math] instead of [math] for PS 5.1 compatibility
             if ($Content.Length -gt $OutputLimit) {
-                $Content = "[...Smart Filtered & Truncated...]`r`n" + $Content.Substring($Content.Length - $OutputLimit)
+                # [FIX] 移除 '&' 符號，改用 'and'
+                $Content = "[...Smart Filtered and Truncated...]`r`n" + $Content.Substring($Content.Length - $OutputLimit)
             }
         }
         return $Content
@@ -197,7 +196,7 @@ $LogsDir = "$SourceDir\Logs"
 $RemoteLogsDir = "$SourceDir\1Remote\Log"
 $BetterGILogsDir = "C:\Program Files\BetterGI\log"
 $LogsOutFile = Join-Path $TempLogs "Recent_Logs_Summary.txt"
-Set-Content -Path $LogsOutFile -Value "=== [ Recent Logs Summary (Sanitized & Smart Filtered) ] ===`r`n" -Encoding UTF8
+Set-Content -Path $LogsOutFile -Value "=== [ Recent Logs Summary ] ===`r`n" -Encoding UTF8
 
 $LogTargets = @()
 if (Test-Path $LogsDir) { $LogTargets += Get-ChildItem -Path $LogsDir -Filter "*.log" | Sort LastWriteTime -Desc | Select -First 2 }
@@ -206,7 +205,7 @@ if (Test-Path $BetterGILogsDir) { $LogTargets += Get-ChildItem -Path $BetterGILo
 
 foreach ($File in $LogTargets) {
     if ($null -eq $File) { continue }
-    # V3.2 Fix: Use [System.Math] instead of [math] for PS 5.1 compatibility
+    # [FIX] 確保使用 [System.Math]
     $SizeMB = [System.Math]::Round($File.Length / 1MB, 2)
     $Header = "`r`n======================================================================`r`nFILE: $($File.Name)`r`nPATH: $($File.FullName)`r`nSIZE: $SizeMB MB`r`n======================================================================`r`n"
     Add-Content -Path $LogsOutFile -Value $Header -Encoding UTF8
@@ -231,6 +230,5 @@ Write-Host "`r`n[完成] Context Pack 已儲存至: $ZipPath" -ForegroundColor G
 Write-Host "⚠️ 注意: 已執行基本脫敏，但上傳前仍建議檢查內容。" -ForegroundColor Yellow
 
 Read-Host "作業完成。按 Enter 鍵關閉視窗..."
-# V3.2 Fix: Safer string interpolation for ArgumentList
-$ExplorerArgs = '/select,"' + $ZipPath + '"'
-Start-Process "explorer.exe" -ArgumentList $ExplorerArgs
+# [FIX] 使用最簡單的方式啟動 Explorer
+Invoke-Item $ZipPath
