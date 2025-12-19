@@ -1,19 +1,17 @@
 <#
 .SYNOPSIS
-    AutoTask AI Context Pack Generator V3.1
+    AutoTask AI Context Pack Generator V3.2
     專為 "上傳給 AI 進行開發與除錯" 設計的快照工具。
     
-    V3.1 Fix:
-    1. [Critical] 修復 V3.0 最後一行 Start-Process 的引號語法錯誤，解決視窗閃退問題。
+    V3.2 Fixes:
+    1. [Compat] 將 [math] 替換為 [System.Math] 以支援 Windows PowerShell 5.1。
+    2. [Syntax] 優化 Start-Process 參數寫法，避免引號解析錯誤導致閃退。
     
-    V3.0 Features:
-    1. [Privacy] 自動脫敏: 將使用者名稱、機器名稱替換為佔位符 (User/Machine)。
-    2. [Context] 文件聚合: 自動搜尋並打包 SSOT、維護準則與開發者手冊。
-    3. [Logic] 繼承 V2.14 的智慧日誌過濾 (Smart Log Filter)。
-    4. [Structure] 優化目錄結構。
+    V3.1 Fix:
+    1. [Critical] 修復 V3.0 最後一行 Start-Process 的引號語法錯誤。
 #>
 
-$SnapshotVersion = "V3.1 (AI Context Pack)"
+$SnapshotVersion = "V3.2 (AI Context Pack)"
 $SourceDir = "C:\AutoTask"
 $OutputDir = "C:\AutoTask_Snapshots"
 $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -204,7 +202,9 @@ if (Test-Path $BetterGILogsDir) { $LogTargets += Get-ChildItem -Path $BetterGILo
 
 foreach ($File in $LogTargets) {
     if ($null -eq $File) { continue }
-    $Header = "`r`n======================================================================`r`nFILE: $($File.Name)`r`nPATH: $($File.FullName)`r`nSIZE: $([math]::Round($File.Length / 1MB, 2)) MB`r`n======================================================================`r`n"
+    # V3.2 Fix: Use [System.Math] instead of [math] for PS 5.1 compatibility
+    $SizeMB = [System.Math]::Round($File.Length / 1MB, 2)
+    $Header = "`r`n======================================================================`r`nFILE: $($File.Name)`r`nPATH: $($File.FullName)`r`nSIZE: $SizeMB MB`r`n======================================================================`r`n"
     Add-Content -Path $LogsOutFile -Value $Header -Encoding UTF8
     $Content = Get-SmartLogContent -FilePath $File.FullName
     $Content | Out-File -FilePath $LogsOutFile -Append -Encoding UTF8
@@ -227,4 +227,6 @@ Write-Host "`r`n[完成] Context Pack 已儲存至: $ZipPath" -ForegroundColor G
 Write-Host "⚠️ 注意: 已執行基本脫敏，但上傳前仍建議檢查內容。" -ForegroundColor Yellow
 
 Read-Host "作業完成。按 Enter 鍵關閉視窗..."
-Start-Process "explorer.exe" -ArgumentList "/select,`"$ZipPath`"`""
+# V3.2 Fix: Safer string interpolation for ArgumentList
+$ExplorerArgs = '/select,"' + $ZipPath + '"'
+Start-Process "explorer.exe" -ArgumentList $ExplorerArgs
