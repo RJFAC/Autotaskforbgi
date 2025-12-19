@@ -1,20 +1,17 @@
 <#
 .SYNOPSIS
-    AutoTask AI Context Pack Generator V3.3
+    AutoTask AI Context Pack Generator V3.4
     專為 "上傳給 AI 進行開發與除錯" 設計的快照工具。
     
-    V3.3 Fixes:
-    1. [Syntax] 全面修復 PowerShell 解析錯誤：
-       - 修正 Sanitize-Content 中的正則表達式引號問題。
-       - 移除字串中可能導致解析錯誤的 '&' 符號。
-       - 補上遺失的函式結尾 '}'。
-    2. [Compat] 確保使用 [System.Math] 相容 PS 5.1。
+    V3.4 Fixes:
+    1. [Path] 修正文件搜尋邏輯，增加對 "Scripts" 目錄的掃描，解決找不到 SSOT 的問題。
     
-    V3.2/V3.1 Fixes:
-    - 修復 Explorer 啟動引號問題。
+    V3.3 Fixes:
+    1. [Syntax] 全面修復 PowerShell 解析錯誤 (Regex 引號, &, }).
+    2. [Compat] 確保使用 [System.Math] 相容 PS 5.1。
 #>
 
-$SnapshotVersion = "V3.3 (AI Context Pack)"
+$SnapshotVersion = "V3.4 (AI Context Pack)"
 $SourceDir = "C:\AutoTask"
 $OutputDir = "C:\AutoTask_Snapshots"
 $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -53,21 +50,32 @@ Write-Host "正在準備 AI 上下文包..."
 # 1. 文件聚合 (Documentation)
 # ==============================================================================
 Write-Host " -> 1/5 收集系統文件 (SSOT/Manual)..."
+# 定義關鍵文件名稱模式
 $DocPatterns = @("AutoTask_System_SSOT*", "SSOT_Maintenance*", "Developer_Manual*", "AutoTask_Core_Analysis*")
+# 定義搜尋路徑: 根目錄 + Scripts 目錄
+$DocSearchPaths = @($SourceDir, "$SourceDir\Scripts")
 $FoundDocs = $false
 
-foreach ($Pattern in $DocPatterns) {
-    $Files = Get-ChildItem -Path $SourceDir -Filter "$Pattern.txt" -ErrorAction SilentlyContinue
-    $Files += Get-ChildItem -Path $SourceDir -Filter "$Pattern.md" -ErrorAction SilentlyContinue
-    foreach ($File in $Files) {
-        Copy-Item -Path $File.FullName -Destination $TempDocs -Force
-        Write-Host "    + 包含: $($File.Name)" -ForegroundColor Green
-        $FoundDocs = $true
+foreach ($Path in $DocSearchPaths) {
+    if (Test-Path $Path) {
+        foreach ($Pattern in $DocPatterns) {
+            $Files = Get-ChildItem -Path $Path -Filter "$Pattern.txt" -ErrorAction SilentlyContinue
+            $Files += Get-ChildItem -Path $Path -Filter "$Pattern.md" -ErrorAction SilentlyContinue
+            foreach ($File in $Files) {
+                # 避免重複複製 (若根目錄與 Scripts 都有)
+                $DestPath = Join-Path $TempDocs $File.Name
+                if (-not (Test-Path $DestPath)) {
+                    Copy-Item -Path $File.FullName -Destination $TempDocs -Force
+                    Write-Host "    + 包含: $($File.Name)" -ForegroundColor Green
+                    $FoundDocs = $true
+                }
+            }
+        }
     }
 }
 
 if (-not $FoundDocs) {
-    Write-Host "    [提示] 未在根目錄找到 SSOT 文件。" -ForegroundColor Yellow
+    Write-Host "    [提示] 未在根目錄或 Scripts 目錄找到 SSOT 文件。" -ForegroundColor Yellow
     Set-Content -Path "$TempDocs\READ_ME.txt" -Value "SSOT files not found." -Encoding UTF8
 }
 
@@ -106,13 +114,12 @@ function Sanitize-Content {
     # 替換機器名稱
     $Content = $Content -replace [regex]::Escape($SensitiveMachine), "LOCALHOST"
     
-    # [FIX] 使用單引號定義 Regex，避免 PowerShell 解析錯誤
-    # 替換 C:\Users\XXX 路徑
+    # 使用單引號定義 Regex，避免 PowerShell 解析錯誤
     $Pattern = 'C:\\Users\\[^\\]+'
     $Content = $Content -replace $Pattern, "%USERPROFILE%"
     
     return $Content
-} # [FIX] 補上遺失的括號
+} 
 
 # 處理一般 Configs
 $ConfigFiles = Get-ChildItem -Path "$SourceDir\Configs" -File
@@ -182,7 +189,6 @@ function Get-SmartLogContent {
             $Content = $FilteredLines -join "`r`n"
             
             if ($Content.Length -gt $OutputLimit) {
-                # [FIX] 移除 '&' 符號，改用 'and'
                 $Content = "[...Smart Filtered and Truncated...]`r`n" + $Content.Substring($Content.Length - $OutputLimit)
             }
         }
@@ -205,7 +211,7 @@ if (Test-Path $BetterGILogsDir) { $LogTargets += Get-ChildItem -Path $BetterGILo
 
 foreach ($File in $LogTargets) {
     if ($null -eq $File) { continue }
-    # [FIX] 確保使用 [System.Math]
+    # 確保使用 [System.Math]
     $SizeMB = [System.Math]::Round($File.Length / 1MB, 2)
     $Header = "`r`n======================================================================`r`nFILE: $($File.Name)`r`nPATH: $($File.FullName)`r`nSIZE: $SizeMB MB`r`n======================================================================`r`n"
     Add-Content -Path $LogsOutFile -Value $Header -Encoding UTF8
@@ -230,5 +236,4 @@ Write-Host "`r`n[完成] Context Pack 已儲存至: $ZipPath" -ForegroundColor G
 Write-Host "⚠️ 注意: 已執行基本脫敏，但上傳前仍建議檢查內容。" -ForegroundColor Yellow
 
 Read-Host "作業完成。按 Enter 鍵關閉視窗..."
-# [FIX] 使用最簡單的方式啟動 Explorer
 Invoke-Item $ZipPath
