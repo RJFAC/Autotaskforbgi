@@ -1,16 +1,19 @@
 <#
 .SYNOPSIS
-    AutoTask AI Context Pack Generator V3.0
+    AutoTask AI Context Pack Generator V3.1
     專為 "上傳給 AI 進行開發與除錯" 設計的快照工具。
     
-    V3.0 功能特點:
-    1. [Privacy] 自動脫敏: 將使用者名稱、機器名稱替換為佔位符 (User/Machine)，提升上傳安全性。
+    V3.1 Fix:
+    1. [Critical] 修復 V3.0 最後一行 Start-Process 的引號語法錯誤，解決視窗閃退問題。
+    
+    V3.0 Features:
+    1. [Privacy] 自動脫敏: 將使用者名稱、機器名稱替換為佔位符 (User/Machine)。
     2. [Context] 文件聚合: 自動搜尋並打包 SSOT、維護準則與開發者手冊。
-    3. [Logic] 繼承 V2.14 的智慧日誌過濾 (Smart Log Filter)，確保日誌體積適合 AI 閱讀。
-    4. [Structure] 優化目錄結構，方便 AI 建立上下文。
+    3. [Logic] 繼承 V2.14 的智慧日誌過濾 (Smart Log Filter)。
+    4. [Structure] 優化目錄結構。
 #>
 
-$SnapshotVersion = "V3.0 (AI Context Pack)"
+$SnapshotVersion = "V3.1 (AI Context Pack)"
 $SourceDir = "C:\AutoTask"
 $OutputDir = "C:\AutoTask_Snapshots"
 $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -224,4 +227,4 @@ Write-Host "`r`n[完成] Context Pack 已儲存至: $ZipPath" -ForegroundColor G
 Write-Host "⚠️ 注意: 已執行基本脫敏，但上傳前仍建議檢查內容。" -ForegroundColor Yellow
 
 Read-Host "作業完成。按 Enter 鍵關閉視窗..."
-Start-Process "explorer.exe" -ArgumentList "/select,`"$ZipPath`""
+Start-Process "explorer.exe" -ArgumentList "/select,`"$ZipPath`"`""
