@@ -1,7 +1,10 @@
 <#
 .SYNOPSIS
-    AutoTask AI Context Pack Generator V3.2
+    AutoTask AI Context Pack Generator V3.3
     專為 "上傳給 AI 進行開發與除錯" 設計的快照工具。
+    
+    V3.3 Fixes:
+    1. [Fix] 徹底修復第 160 行遺漏的 [math] 引用，改為 [System.Math]，解決 PS 5.1 閃退問題。
     
     V3.2 Fixes:
     1. [Compat] 將 [math] 替換為 [System.Math] 以支援 Windows PowerShell 5.1。
@@ -11,7 +14,7 @@
     1. [Critical] 修復 V3.0 最後一行 Start-Process 的引號語法錯誤。
 #>
 
-$SnapshotVersion = "V3.2 (AI Context Pack)"
+$SnapshotVersion = "V3.3 (AI Context Pack)"
 $SourceDir = "C:\AutoTask"
 $OutputDir = "C:\AutoTask_Snapshots"
 $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -179,6 +182,7 @@ function Get-SmartLogContent {
             }
             $Content = $FilteredLines -join "`r`n"
             
+            # [V3.3 FIX] Use [System.Math] instead of [math] for PS 5.1 compatibility
             if ($Content.Length -gt $OutputLimit) {
                 $Content = "[...Smart Filtered & Truncated...]`r`n" + $Content.Substring($Content.Length - $OutputLimit)
             }
