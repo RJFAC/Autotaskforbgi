@@ -1,10 +1,11 @@
 ﻿# =============================================================================
-# AutoTask Master V5.31 - Silence Time Window
+# AutoTask Master V5.32 - Weekly Config Support
 # =============================================================================
-# V5.31:
-#   1. [Logic] 優化靜音觸發條件：除了檢查 ManualTrigger 外，新增時間窗口檢查。
-#      僅在 03:35~04:30 期間啟動時才執行 Set-Silence，避免白天誤觸發靜音。
-# V5.30: 1Remote 分段啟動。
+# V5.32:
+#   1. [Fix] 關機檢查邏輯新增讀取 WeeklyConfig.json。
+#      現在 Master 會綜合判斷 "NoShutdown.log" (手動指定) 與 "WeeklyConfig" (每週預設)。
+#      解決了每週預設不關機設定無效的問題。
+# V5.31: 靜音時段控制。
 # =============================================================================
 
 # --- [0. 權限自我檢查] ---
@@ -45,11 +46,10 @@ function Write-Log {
 }
 
 # --- [1. 啟動初始化] ---
-Write-Log ">>> Master 啟動 (Admin Mode - V5.31)..." "Cyan"
-
-$Now = Get-Date
+Write-Log ">>> Master 啟動 (Admin Mode - V5.32)..." "Cyan"
 
 # --- [絕對禁區檢查 (03:55 ~ 04:05)] ---
+$Now = Get-Date
 $DeadZoneStart = $Now.Date.AddHours(3).AddMinutes(55) # 03:55
 $DeadZoneEnd   = $Now.Date.AddHours(4).AddMinutes(5)  # 04:05
 
@@ -62,7 +62,7 @@ if ($Now -ge $DeadZoneStart -and $Now -lt $DeadZoneEnd) {
     Write-Log "等待結束，解除鎖定。" "Green"
 }
 
-# --- [執行靜音與勿擾設定 (V5.31 優化)] ---
+# --- [執行靜音與勿擾設定] ---
 # 條件: 1. 非手動觸發 AND 2. 位於排程時間窗 (03:35~04:30)
 $SilenceStart = $Now.Date.AddHours(3).AddMinutes(35)
 $SilenceEnd   = $Now.Date.AddHours(4).AddMinutes(30)
@@ -122,7 +122,6 @@ if ((Test-Path $RunFlag) -and (Get-Process "1Remote" -ErrorAction SilentlyContin
         }
 
         # 2. 檢查時間窗 (03:35 ~ 04:30)
-        # 此處使用相同的時間窗變數
         if ($Now -lt $SilenceStart -or $Now -gt $SilenceEnd) {
             Write-Log "當前時間 ($($Now.ToString("HH:mm"))) 不在任務執行窗口 (03:35-04:30)，退出。" "Red"
             exit
@@ -166,10 +165,8 @@ if ((Test-Path $RunFlag) -and (Get-Process "1Remote" -ErrorAction SilentlyContin
     # 分段啟動 1Remote
     Write-Log "啟動 1Remote 主程式..."
     Start-Process -FilePath $1RemotePath -WindowStyle Minimized
-    
     Write-Log "等待 5 秒讓 1Remote 就緒..."
     Start-Sleep 5
-    
     Write-Log "發送連線指令 (目標: Remote)..."
     Start-Process -FilePath $1RemotePath -ArgumentList "-r Remote" -WindowStyle Minimized
     
@@ -229,13 +226,59 @@ Get-Process | Where-Object { $_.CommandLine -like "*Monitor.ps1*" } | Stop-Proce
 $SessionInfo = qwinsta 2>$null | Select-String "\bRemote\b"
 if ($SessionInfo) { cmd /c "logoff $((($SessionInfo.ToString().Trim() -replace "\s+", " ").Split(" "))[2])" 2>$null }
 
-# 關機檢查
+# --- [關機檢查 (V5.32 優化)] ---
 $Shut = $true
+$TodayStr = Get-Date -Format "yyyy/MM/dd"
+
+# 1. 優先檢查 NoShutdown.log (手動指定覆蓋)
 if (Test-Path "$ConfigDir\NoShutdown.log") {
-    if ((Get-Content "$ConfigDir\NoShutdown.log") -contains (Get-Date -Format "yyyy/MM/dd")) { $Shut = $false }
+    $List = Get-Content "$ConfigDir\NoShutdown.log"
+    if ($List -contains $TodayStr) {
+        Write-Log "NoShutdown.log 指定今日 [不關機]。" "Green"
+        $Shut = $false
+    }
 }
+
+# 2. 若 Log 未指定不關機，則檢查 WeeklyConfig (每週預設)
+if ($Shut -and (Test-Path "$ConfigDir\WeeklyConfig.json")) {
+    try {
+        $Weekly = Get-Content "$ConfigDir\WeeklyConfig.json" -Raw | ConvertFrom-Json
+        $DayOfWeek = (Get-Date).DayOfWeek.ToString()
+        
+        # 紊亂期計算
+        $RefDate = Get-Date "2024-08-28"
+        $DiffDays = ((Get-Date) - $RefDate).TotalDays
+        $CycleDay = $DiffDays % 42
+        if ($CycleDay -lt 0) { $CycleDay += 42 }
+        
+        $IsNoShut = $false
+        
+        # 判斷是否為紊亂期
+        if ($CycleDay -ge 7.4 -and $CycleDay -le 17.2) {
+            # 優先讀取 Turbulence.NoShutdown
+            if ($Weekly.Turbulence.NoShutdown.$DayOfWeek -eq $true) {
+                Write-Log "紊亂期每週設定 ($DayOfWeek) 為 [不關機]。" "Cyan"
+                $IsNoShut = $true
+            }
+        } else {
+            # 讀取一般 NoShutdown
+            if ($Weekly.NoShutdown.$DayOfWeek -eq $true) {
+                Write-Log "一般每週設定 ($DayOfWeek) 為 [不關機]。" "Cyan"
+                $IsNoShut = $true
+            }
+        }
+        
+        if ($IsNoShut) { $Shut = $false }
+        
+    } catch {
+        Write-Log "讀取 WeeklyConfig 失敗，維持預設關機。" "Red"
+    }
+}
+
 if ($Shut) {
     if (Test-Path "$ScriptDir\Shutdown-Countdown.ps1") {
         Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptDir\Shutdown-Countdown.ps1`""
     } else { Stop-Computer -Force }
+} else {
+    Write-Log "今日設定為不關機，任務結束。" "Green"
 }
