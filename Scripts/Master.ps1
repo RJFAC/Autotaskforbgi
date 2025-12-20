@@ -1,11 +1,10 @@
 ﻿# =============================================================================
-# AutoTask Master V5.30 - 1Remote Split Start
+# AutoTask Master V5.31 - Silence Time Window
 # =============================================================================
-# V5.30:
-#   1. [Fix] 將 1Remote 的啟動與連線動作拆分為兩階段執行：
-#      先啟動主程式 -> 等待 5 秒 -> 再發送連線指令 (-r Remote)。
-#      (此邏輯參考 Monitor 的修復機制，能提升連線成功率)。
-# V5.29: 修正 1Remote 參數傳遞格式。
+# V5.31:
+#   1. [Logic] 優化靜音觸發條件：除了檢查 ManualTrigger 外，新增時間窗口檢查。
+#      僅在 03:35~04:30 期間啟動時才執行 Set-Silence，避免白天誤觸發靜音。
+# V5.30: 1Remote 分段啟動。
 # =============================================================================
 
 # --- [0. 權限自我檢查] ---
@@ -46,10 +45,11 @@ function Write-Log {
 }
 
 # --- [1. 啟動初始化] ---
-Write-Log ">>> Master 啟動 (Admin Mode - V5.30)..." "Cyan"
+Write-Log ">>> Master 啟動 (Admin Mode - V5.31)..." "Cyan"
+
+$Now = Get-Date
 
 # --- [絕對禁區檢查 (03:55 ~ 04:05)] ---
-$Now = Get-Date
 $DeadZoneStart = $Now.Date.AddHours(3).AddMinutes(55) # 03:55
 $DeadZoneEnd   = $Now.Date.AddHours(4).AddMinutes(5)  # 04:05
 
@@ -62,11 +62,19 @@ if ($Now -ge $DeadZoneStart -and $Now -lt $DeadZoneEnd) {
     Write-Log "等待結束，解除鎖定。" "Green"
 }
 
-# --- [執行靜音與勿擾設定] ---
+# --- [執行靜音與勿擾設定 (V5.31 優化)] ---
+# 條件: 1. 非手動觸發 AND 2. 位於排程時間窗 (03:35~04:30)
+$SilenceStart = $Now.Date.AddHours(3).AddMinutes(35)
+$SilenceEnd   = $Now.Date.AddHours(4).AddMinutes(30)
+
 if (-not (Test-Path $ManualTriggerFlag)) {
-    if (Test-Path "$ScriptDir\Set-Silence.ps1") {
-        Write-Log "執行系統靜音..." "Cyan"
-        & "$ScriptDir\Set-Silence.ps1"
+    if ($Now -ge $SilenceStart -and $Now -le $SilenceEnd) {
+        if (Test-Path "$ScriptDir\Set-Silence.ps1") {
+            Write-Log "偵測到排程時段啟動，執行系統靜音..." "Cyan"
+            & "$ScriptDir\Set-Silence.ps1"
+        }
+    } else {
+        Write-Log "非排程時段啟動 ($($Now.ToString("HH:mm")))，跳過靜音設定。" "Gray"
     }
 }
 
@@ -114,9 +122,8 @@ if ((Test-Path $RunFlag) -and (Get-Process "1Remote" -ErrorAction SilentlyContin
         }
 
         # 2. 檢查時間窗 (03:35 ~ 04:30)
-        $TimeStart = $Now.Date.AddHours(3).AddMinutes(35)
-        $TimeEnd   = $Now.Date.AddHours(4).AddMinutes(30)
-        if ($Now -lt $TimeStart -or $Now -gt $TimeEnd) {
+        # 此處使用相同的時間窗變數
+        if ($Now -lt $SilenceStart -or $Now -gt $SilenceEnd) {
             Write-Log "當前時間 ($($Now.ToString("HH:mm"))) 不在任務執行窗口 (03:35-04:30)，退出。" "Red"
             exit
         }
@@ -156,16 +163,13 @@ if ((Test-Path $RunFlag) -and (Get-Process "1Remote" -ErrorAction SilentlyContin
     $1RemotePath = "C:\AutoTask\1Remote\1Remote.exe"
     if (Test-Path "$ConfigDir\EnvConfig.json") { try { $env = Get-Content "$ConfigDir\EnvConfig.json" -Raw | ConvertFrom-Json; if ($env.Path1Remote) { $1RemotePath = $env.Path1Remote } } catch {} }
     
-    # [V5.30 Fix] 分段啟動 1Remote
-    # 1. 啟動主程式
+    # 分段啟動 1Remote
     Write-Log "啟動 1Remote 主程式..."
     Start-Process -FilePath $1RemotePath -WindowStyle Minimized
     
-    # 2. 等待初始化
     Write-Log "等待 5 秒讓 1Remote 就緒..."
     Start-Sleep 5
     
-    # 3. 發送連線指令
     Write-Log "發送連線指令 (目標: Remote)..."
     Start-Process -FilePath $1RemotePath -ArgumentList "-r Remote" -WindowStyle Minimized
     
@@ -208,7 +212,6 @@ while ($true) {
         if ($PayloadProc) { $PayloadLaunched = $true } 
         else {
              if (((Get-Date) - $SupervisorStart).TotalMinutes -gt 2) {
-                 # [V5.30 Fix] 重連時同樣使用分段 (或直接發送連線指令，這裡假設主程式已在跑，直接送指令)
                  Write-Log "Payload 逾時未啟動，嘗試重送連線指令..." "Orange"
                  Start-Process -FilePath $1RemotePath -ArgumentList "-r Remote" -WindowStyle Minimized
                  Start-Sleep 10
