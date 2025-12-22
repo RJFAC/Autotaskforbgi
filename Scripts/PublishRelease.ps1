@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # AutoTask 專案淨化與發布工具 V2.4 (新增 URL 生成與存檔)
 # =============================================================================
 $SourceDir = "C:\AutoTask"
@@ -35,17 +35,39 @@ New-Item "$DestDir\Configs" -ItemType Directory -Force | Out-Null
 Copy-Item "$SourceDir\Configs\WeeklyConfig.json" "$DestDir\Configs"
 "https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN" | Set-Content "$DestDir\Configs\Webhook.url" -Encoding UTF8
 
-# --- 3. 敏感資料脫敏 ---
-Write-Host "[3/5] 執行代碼脫敏..." -ForegroundColor Green
-$ScriptFiles = Get-ChildItem "$DestDir\Scripts\*.ps1"
+# --- 3. 敏感資料脫敏 (符合 SSOT Guideline Sec 6) ---
+Write-Host "[3/5] 執行深度隱私淨化..." -ForegroundColor Green
+
+# 定義敏感資料清單 (請根據實際情況擴充)
+$SensitiveMap = @{
+    [regex]::Escape("C:\Users\$MyUser") = "%USERPROFILE%"
+    "[USER_NAME]"                           = "[USER_NAME]"
+    "[MACHINE_ID]"                  = "[MACHINE_ID]"
+    # 若有特定的 SID 也應加入
+    # "S-1-5-21-..."                   = "[SID_REMOVED]"
+}
+
+$ScriptFiles = Get-ChildItem "$DestDir\Scripts\*.ps1", "$DestDir\Configs\*.json"
+# 若未來加入 XML 複製，請取消註解下方
+# $ScriptFiles += Get-ChildItem "$DestDir\*.xml"
+
 foreach ($file in $ScriptFiles) {
     $content = Get-Content $file.FullName -Raw -Encoding UTF8
     $isModified = $false
-    if ($content -match [regex]::Escape("C:\Users\$MyUser")) {
-        $content = $content -replace [regex]::Escape("C:\Users\$MyUser"), "%USERPROFILE%"
-        $isModified = $true
+    
+    foreach ($key in $SensitiveMap.Keys) {
+        if ($content -match $key) {
+            # 針對 Regex 類型的 Key 不需要再 Escape，但普通字串需要注意
+            # 這裡簡化處理，假設 Key 已經是 Regex Safe 或是純文字
+            $content = $content -replace $key, $SensitiveMap[$key]
+            $isModified = $true
+            Write-Host "  [SEC] 在 $($file.Name) 中淨化了敏感字串: $key" -ForegroundColor Yellow
+        }
     }
-    if ($isModified) { Set-Content $file.FullName -Value $content -Encoding UTF8 }
+    
+    if ($isModified) { 
+        Set-Content $file.FullName -Value $content -Encoding UTF8 
+    }
 }
 
 # --- 4. 建立 .gitignore ---
@@ -131,3 +153,4 @@ try {
 
 Write-Host "`n作業結束。"
 Read-Host "按 Enter 關閉..."
+

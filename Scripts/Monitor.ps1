@@ -12,7 +12,7 @@ $DoneFlag   = "$FlagDir\Done.flag"
 $MasterScript = "$ScriptDir\Master.ps1"
 
 # 嘗試讀取 EnvConfig
-$1RemoteDir = "%USERPROFILE%\Downloads\1Remote-1.2.1-net9-x64"
+$1RemoteDir = "C:\Users\[USER_NAME]\Downloads\1Remote-1.2.1-net9-x64"
 if (Test-Path "$BaseDir\Configs\EnvConfig.json") {
     try {
         $env = Get-Content "$BaseDir\Configs\EnvConfig.json" -Raw -Encoding UTF8 | ConvertFrom-Json

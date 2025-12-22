@@ -1,10 +1,12 @@
 ﻿# =============================================================================
-# AutoTask Master V5.32 - Weekly Config Support
+# AutoTask Master V5.33 - Fix Flag Logic & Colors
 # =============================================================================
+# V5.33:
+#   1. [Fix] 修復手動觸發邏輯順序錯誤：將旗標清理移至判斷手動觸發之前，
+#      避免 Master 誤刪剛建立的 ForceRun.flag，導致 Payload 誤判今日任務已完成。
+#   2. [Fix] 修正 Write-Log 使用不支援的顏色 "Orange" 導致崩潰的問題 (改為 DarkYellow)。
 # V5.32:
 #   1. [Fix] 關機檢查邏輯新增讀取 WeeklyConfig.json。
-#      現在 Master 會綜合判斷 "NoShutdown.log" (手動指定) 與 "WeeklyConfig" (每週預設)。
-#      解決了每週預設不關機設定無效的問題。
 # V5.31: 靜音時段控制。
 # =============================================================================
 
@@ -46,7 +48,7 @@ function Write-Log {
 }
 
 # --- [1. 啟動初始化] ---
-Write-Log ">>> Master 啟動 (Admin Mode - V5.32)..." "Cyan"
+Write-Log ">>> Master 啟動 (Admin Mode - V5.33)..." "Cyan"
 
 # --- [絕對禁區檢查 (03:55 ~ 04:05)] ---
 $Now = Get-Date
@@ -97,11 +99,19 @@ if ((Test-Path $RunFlag) -and (Get-Process "1Remote" -ErrorAction SilentlyContin
 } else {
     # --- 全新啟動流程 ---
     
+    # [V5.33 Fix] 先捕捉手動觸發狀態，再進行全域 Flag 清理
+    # 這樣可以防止在建立 ForceRun.flag 後又馬上被清除
+    $IsManualTrigger = Test-Path $ManualTriggerFlag
+    
+    # 重置 Flags (清理舊狀態)
+    Get-ChildItem $FlagDir -Filter "*.flag" | Remove-Item -Force
+    
     # [檢查手動觸發]
-    if (Test-Path $ManualTriggerFlag) {
+    if ($IsManualTrigger) {
         Write-Log "偵測到手動觸發 (ManualTrigger)，執行強制清理與啟動..." "Magenta"
         Send-DiscordNotification -Title "🚀 手動啟動" -Message "使用者強制啟動任務。" -Color "Blue"
-        Remove-Item $ManualTriggerFlag -Force
+        
+        # 建立強制執行標記 (在清理後建立)
         New-Item -ItemType File -Path $ForceRunFlag -Force | Out-Null
         
         Get-Process | Where-Object { $_.Name -match "1Remote|Monitor" } | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -146,8 +156,7 @@ if ((Test-Path $RunFlag) -and (Get-Process "1Remote" -ErrorAction SilentlyContin
         Send-DiscordNotification -Title "⏰ 排程啟動" -Message "Master 開始執行任務。" -Color "Blue"
     }
 
-    # 重置 Flags 並啟動環境 (正式 Run)
-    Get-ChildItem $FlagDir -Filter "*.flag" | Remove-Item -Force
+    # 建立 Run.flag (正式 Run)
     New-Item -ItemType File -Path $RunFlag -Force | Out-Null
     
     # 網路檢查
@@ -209,7 +218,8 @@ while ($true) {
         if ($PayloadProc) { $PayloadLaunched = $true } 
         else {
              if (((Get-Date) - $SupervisorStart).TotalMinutes -gt 2) {
-                 Write-Log "Payload 逾時未啟動，嘗試重送連線指令..." "Orange"
+                 # [V5.33 Fix] 修正顏色名稱 Orange -> DarkYellow
+                 Write-Log "Payload 逾時未啟動，嘗試重送連線指令..." "DarkYellow"
                  Start-Process -FilePath $1RemotePath -ArgumentList "-r Remote" -WindowStyle Minimized
                  Start-Sleep 10
              }
