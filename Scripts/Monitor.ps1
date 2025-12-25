@@ -1,5 +1,9 @@
 ﻿# =============================================================================
-# AutoTask Monitor V3.8 - TCP 狀態監控/診斷增強/容錯強化版
+# AutoTask Monitor V3.9 - WMI 容錯增強版
+# =============================================================================
+# V3.9:
+#   1. [Fix] 修正 Get-CimInstance 在系統休眠/關機時報錯導致誤判 Master 已死的問題。
+#      加入 Try-Catch 保護，當 WMI 查詢失敗時，假設 Master 仍存活。
 # =============================================================================
 
 # --- [定義路徑] ---
@@ -38,7 +42,7 @@ function Write-Log {
 # 清理舊日誌
 try { Get-ChildItem -Path $LogDir -Filter "*.log" | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) } | Remove-Item -Force -ErrorAction SilentlyContinue } catch {}
 
-Write-Log "Monitor 啟動 (V3.8 - 容錯強化)..." "Cyan"
+Write-Log "Monitor 啟動 (V3.9 - WMI 容錯)..." "Cyan"
 
 # --- [狀態變數] ---
 $CurrentLogFile = $null
@@ -76,10 +80,18 @@ while ($true) {
         }
     } catch {}
 
-    # 3. 監督 Master 是否活著
-    $MasterProc = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*Master.ps1*" }
+    # 3. 監督 Master 是否活著 [V3.9: 加入 WMI 容錯]
+    $MasterAlive = $true # 預設為真，避免 WMI 錯誤導致誤殺
+    try {
+        $ProcList = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction Stop
+        $MasterProc = $ProcList | Where-Object { $_.CommandLine -like "*Master.ps1*" }
+        if (-not $MasterProc) { $MasterAlive = $false }
+    } catch {
+        # 若 WMI 失敗 (如休眠中)，假定 Master 還活著
+        # Write-Log "WMI 查詢異常，跳過 Master 檢查。" "Gray"
+    }
     
-    if (-not $MasterProc) {
+    if (-not $MasterAlive) {
         if (-not (Test-Path $DoneFlag)) {
             Write-Log "⚠️ 警報：Master 意外消失且任務未完成！正在重啟 Master..." "Red"
             Start-Process powershell.exe -ArgumentList "-ExecutionPolicy Bypass -File `"$MasterScript`"" -Verb RunAs
@@ -157,4 +169,3 @@ while ($true) {
 
     Start-Sleep -Seconds 2
 }
-

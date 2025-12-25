@@ -1,13 +1,12 @@
 ﻿# =============================================================================
-# AutoTask Master V5.33 - Fix Flag Logic & Colors
+# AutoTask Master V5.34 - Fix WMI Crash on Sleep/Wake
 # =============================================================================
+# V5.34:
+#   1. [Fix] 修正 Get-CimInstance 在系統睡眠/喚醒時報錯 (0x80041033) 導致 Master
+#      誤判 Monitor 已死並錯誤重啟的問題。加入 Try-Catch 容錯機制。
 # V5.33:
-#   1. [Fix] 修復手動觸發邏輯順序錯誤：將旗標清理移至判斷手動觸發之前，
-#      避免 Master 誤刪剛建立的 ForceRun.flag，導致 Payload 誤判今日任務已完成。
-#   2. [Fix] 修正 Write-Log 使用不支援的顏色 "Orange" 導致崩潰的問題 (改為 DarkYellow)。
-# V5.32:
-#   1. [Fix] 關機檢查邏輯新增讀取 WeeklyConfig.json。
-# V5.31: 靜音時段控制。
+#   1. [Fix] 修復手動觸發邏輯順序錯誤。
+#   2. [Fix] 修正 Write-Log 顏色錯誤。
 # =============================================================================
 
 # --- [0. 權限自我檢查] ---
@@ -48,7 +47,7 @@ function Write-Log {
 }
 
 # --- [1. 啟動初始化] ---
-Write-Log ">>> Master 啟動 (Admin Mode - V5.33)..." "Cyan"
+Write-Log ">>> Master 啟動 (Admin Mode - V5.34)..." "Cyan"
 
 # --- [絕對禁區檢查 (03:55 ~ 04:05)] ---
 $Now = Get-Date
@@ -100,7 +99,6 @@ if ((Test-Path $RunFlag) -and (Get-Process "1Remote" -ErrorAction SilentlyContin
     # --- 全新啟動流程 ---
     
     # [V5.33 Fix] 先捕捉手動觸發狀態，再進行全域 Flag 清理
-    # 這樣可以防止在建立 ForceRun.flag 後又馬上被清除
     $IsManualTrigger = Test-Path $ManualTriggerFlag
     
     # 重置 Flags (清理舊狀態)
@@ -205,8 +203,16 @@ while ($true) {
         exit
     }
 
-    # Monitor 存活檢查
-    $MonitorRunning = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*Monitor.ps1*" }
+    # Monitor 存活檢查 [V5.34: 加入 WMI 容錯]
+    $MonitorRunning = $true # 預設為真，防止 WMI 錯誤導致誤殺
+    try {
+        $ProcList = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction Stop
+        $MonitorProc = $ProcList | Where-Object { $_.CommandLine -like "*Monitor.ps1*" }
+        if (-not $MonitorProc) { $MonitorRunning = $false }
+    } catch {
+        # 若 WMI 失敗 (如休眠中/關機中)，假定 Monitor 還活著，避免重啟
+        # Write-Log "WMI 查詢異常 (可能正在休眠)，跳過 Monitor 檢查。" "Gray" 
+    }
     
     if (-not $MonitorRunning) {
         Write-Log "警告: Monitor 已消失，正在重啟..." "Yellow"
@@ -214,15 +220,22 @@ while ($true) {
     }
 
     if (-not $PayloadLaunched -and ((Get-Date) - $SupervisorStart).TotalMinutes -lt 15) {
-        $PayloadProc = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*Payload.ps1*" }
-        if ($PayloadProc) { $PayloadLaunched = $true } 
-        else {
-             if (((Get-Date) - $SupervisorStart).TotalMinutes -gt 2) {
-                 # [V5.33 Fix] 修正顏色名稱 Orange -> DarkYellow
-                 Write-Log "Payload 逾時未啟動，嘗試重送連線指令..." "DarkYellow"
-                 Start-Process -FilePath $1RemotePath -ArgumentList "-r Remote" -WindowStyle Minimized
-                 Start-Sleep 10
-             }
+        # [V5.34: 加入 WMI 容錯]
+        try {
+            $ProcList = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction Stop
+            $PayloadProc = $ProcList | Where-Object { $_.CommandLine -like "*Payload.ps1*" }
+            
+            if ($PayloadProc) { 
+                $PayloadLaunched = $true 
+            } else {
+                 if (((Get-Date) - $SupervisorStart).TotalMinutes -gt 2) {
+                     Write-Log "Payload 逾時未啟動，嘗試重送連線指令..." "DarkYellow"
+                     Start-Process -FilePath $1RemotePath -ArgumentList "-r Remote" -WindowStyle Minimized
+                     Start-Sleep 10
+                 }
+            }
+        } catch {
+            # WMI 失敗時忽略 Payload 檢查
         }
     } elseif (-not $PayloadLaunched) {
         New-Item -ItemType File -Path $FailFlag -Force | Out-Null
